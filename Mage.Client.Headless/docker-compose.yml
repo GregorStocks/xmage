@@ -1,0 +1,83 @@
+version: '3.8'
+
+services:
+  # XMage Server (neutral referee)
+  xmage-server:
+    image: goesta/mage:latest
+    ports:
+      - "17171:17171"
+      - "17179:17179"
+    environment:
+      - MAGE_DOCKER_SERVER_ADDRESS=0.0.0.0
+      - MAGE_DOCKER_PORT=17171
+      - MAGE_DOCKER_SEONDARY_BIND_PORT=17179
+      - MAGE_DOCKER_MAX_SECONDS_IDLE=600
+      - MAGE_DOCKER_AUTHENTICATION_ACTIVATED=false
+    volumes:
+      - ./server-data:/root/mage/mage-server/saved
+    networks:
+      - xmage-network
+
+  # Claude Bot 1
+  claude-bot-1:
+    build: .
+    depends_on:
+      - xmage-server
+    environment:
+      - XMAGE_SERVER=xmage-server
+      - XMAGE_PORT=17171
+      - USERNAME=ClaudeBot1
+    stdin_open: true
+    tty: true
+    networks:
+      - xmage-network
+    # You would connect your Claude orchestrator to this container's stdin/stdout
+
+  # Claude Bot 2
+  claude-bot-2:
+    build: .
+    depends_on:
+      - xmage-server
+    environment:
+      - XMAGE_SERVER=xmage-server
+      - XMAGE_PORT=17171
+      - USERNAME=ClaudeBot2
+    stdin_open: true
+    tty: true
+    networks:
+      - xmage-network
+
+  # Claude Bot 3
+  claude-bot-3:
+    build: .
+    depends_on:
+      - xmage-server
+    environment:
+      - XMAGE_SERVER=xmage-server
+      - XMAGE_PORT=17171
+      - USERNAME=ClaudeBot3
+    stdin_open: true
+    tty: true
+    networks:
+      - xmage-network
+
+  # Claude Bot 4
+  claude-bot-4:
+    build: .
+    depends_on:
+      - xmage-server
+    environment:
+      - XMAGE_SERVER=xmage-server
+      - XMAGE_PORT=17171
+      - USERNAME=ClaudeBot4
+    stdin_open: true
+    tty: true
+    networks:
+      - xmage-network
+
+networks:
+  xmage-network:
+    driver: bridge
+
+volumes:
+  server-data:
