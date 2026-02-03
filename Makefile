@@ -68,10 +68,18 @@ ai-harness:
 	server_jvm_args="$(AI_HARNESS_JVM_OPENS) $(AI_HARNESS_SERVER_JVM_ARGS) -Dxmage.skipUserStats=true -Dxmage.config.path=$$config_path"; \
 	client_jvm_args="$(AI_HARNESS_JVM_OPENS) $(AI_HARNESS_CLIENT_JVM_ARGS) -Dxmage.aiHarness.server=$$server -Dxmage.aiHarness.port=$$port"; \
 	(cd Mage.Server && $(AI_HARNESS_ENV_VARS) XMAGE_AI_HARNESS_SERVER=$$server XMAGE_AI_HARNESS_PORT=$$port MAVEN_OPTS="$$server_jvm_args" mvn -q exec:java) >"$$server_log" 2>&1 & \
+	server_pid=$$!; \
+	ready=0; \
 	for i in $$(seq 1 $(AI_HARNESS_SERVER_WAIT)); do \
 		if nc -z "$$server" "$$port" >/dev/null 2>&1; then \
+			ready=1; \
 			break; \
 		fi; \
 		sleep 1; \
 	done; \
+	if [ "$$ready" -ne 1 ]; then \
+		echo "Server failed to start on $$server:$$port within $(AI_HARNESS_SERVER_WAIT)s. See $$server_log"; \
+		kill $$server_pid >/dev/null 2>&1 || true; \
+		exit 1; \
+	fi; \
 	cd Mage.Client && $(AI_HARNESS_ENV_VARS) XMAGE_AI_HARNESS_SERVER=$$server XMAGE_AI_HARNESS_PORT=$$port MAVEN_OPTS="$$client_jvm_args" mvn -q exec:java >"$$client_log" 2>&1
