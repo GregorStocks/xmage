@@ -7,7 +7,7 @@
         <hashAlgorithm>SHA-256</hashAlgorithm>
         <validateXml>false</validateXml>
         <local>
-            <location>${user.home}/.m2/build-cache</location>
+            <location>~/.m2/build-cache</location>
         </local>
     </configuration>
     <input>
