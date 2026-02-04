@@ -129,11 +129,21 @@ public class StreamingGamePanel extends GamePanel {
      */
     private void hideBigCardPanel() {
         try {
+            // Hide the bigCardPanel
             Field bigCardPanelField = GamePanel.class.getDeclaredField("bigCardPanel");
             bigCardPanelField.setAccessible(true);
             JPanel bigCardPanel = (JPanel) bigCardPanelField.get(this);
             if (bigCardPanel != null) {
                 bigCardPanel.setVisible(false);
+            }
+
+            // Set the split pane divider to give all space to the game area
+            Field splitField = GamePanel.class.getDeclaredField("splitGameAndBigCard");
+            splitField.setAccessible(true);
+            JSplitPane splitPane = (JSplitPane) splitField.get(this);
+            if (splitPane != null) {
+                splitPane.setDividerLocation(1.0);  // 100% to left component
+                splitPane.setDividerSize(0);  // Hide the divider
             }
         } catch (NoSuchFieldException | IllegalAccessException e) {
             logger.warn("Failed to hide big card panel via reflection", e);
@@ -155,8 +165,9 @@ public class StreamingGamePanel extends GamePanel {
             @SuppressWarnings("unchecked")
             Map<String, ?> splitters = (Map<String, ?>) splittersField.get(this);
             splitters.remove(PreferencesDialog.KEY_GAMEPANEL_DIVIDER_LOCATIONS_HAND_STACK);
+            splitters.remove(PreferencesDialog.KEY_GAMEPANEL_DIVIDER_LOCATIONS_GAME_AND_BIG_CARD);
         } catch (NoSuchFieldException | IllegalAccessException e) {
-            logger.warn("Failed to remove hand/stack splitter from restore", e);
+            logger.warn("Failed to remove splitters from restore", e);
         }
     }
 
