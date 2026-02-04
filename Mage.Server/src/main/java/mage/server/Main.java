@@ -198,18 +198,9 @@ public final class Main {
             logger.info("Done.");
         }
 
-        // User stats DB - skip in testMode or if explicitly disabled (helps with Apple Silicon SQLite issues)
-        if (testMode || Boolean.parseBoolean(System.getProperty("xmage.skipUserStats", "false"))) {
-            logger.info("Skipping user stats DB update (testMode or skipUserStats property).");
-        } else {
-            logger.info("Updating user stats DB...");
-            try {
-                UserStatsRepository.instance.updateUserStats();
-                logger.info("Done.");
-            } catch (Throwable ex) {
-                logger.error("User stats DB update failed, continuing without stats.", ex);
-            }
-        }
+        logger.info("Updating user stats DB...");
+        UserStatsRepository.instance.updateUserStats();
+        logger.info("Done.");
         deleteSavedGames();
 
         int gameTypes = 0;
