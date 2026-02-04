@@ -15,10 +15,17 @@ AI_HARNESS_JVM_OPENS ?= --add-opens=java.base/java.io=ALL-UNNAMED
 AI_HARNESS_SERVER_JVM_ARGS ?= -Dxmage.aiHarnessMode=true -Dxmage.testMode=true
 AI_HARNESS_CLIENT_JVM_ARGS ?= -Dxmage.aiHarness.autoConnect=true -Dxmage.aiHarness.autoStart=true -Dxmage.aiHarness.disableWhatsNew=true -Dxmage.aiHarness.server=$(AI_HARNESS_SERVER) -Dxmage.aiHarness.port=$(AI_HARNESS_PORT) -Dxmage.aiHarness.user=$(AI_HARNESS_USER) -Dxmage.aiHarness.password=$(AI_HARNESS_PASSWORD)
 AI_HARNESS_ENV_VARS ?= XMAGE_AI_HARNESS=1 XMAGE_AI_HARNESS_USER=$(AI_HARNESS_USER) XMAGE_AI_HARNESS_PASSWORD=$(AI_HARNESS_PASSWORD) XMAGE_AI_HARNESS_DISABLE_WHATS_NEW=1
+AI_HARNESS_CONFIG ?= .context/ai-harness-config.json
+AI_HARNESS_SKELETON_DELAY ?= 5
 
 .PHONY: clean
 clean:
 	mvn clean
+
+.PHONY: log-clean
+log-clean:
+	rm -rf $(AI_HARNESS_LOG_DIR)/*.log $(AI_HARNESS_LOG_DIR)/config $(AI_HARNESS_LOG_DIR)/last.txt
+	@echo "Cleaned ai-harness logs"
 
 .PHONY: build
 build:
@@ -43,13 +50,40 @@ install: clean build package
 
 .PHONY: ai-harness
 ai-harness:
-	mvn -q -DskipTests -pl Mage.Server -am install
-	mvn -q -DskipTests -pl Mage.Client -am install
+	mvn -q -DskipTests -pl Mage.Server,Mage.Client,Mage.Client.Headless -am compile install
 	@mkdir -p $(AI_HARNESS_LOG_DIR)
 	@log_dir="$$(pwd)/$(AI_HARNESS_LOG_DIR)"; \
 	ts=$$(date +%Y%m%d_%H%M%S); \
 	server="$(AI_HARNESS_SERVER)"; \
 	port="$(AI_HARNESS_PORT)"; \
+	pids=""; \
+	kill_tree() { \
+		local pid=$$1; \
+		local children=$$(pgrep -P $$pid 2>/dev/null); \
+		for child in $$children; do \
+			kill_tree $$child; \
+		done; \
+		kill -TERM $$pid 2>/dev/null || true; \
+	}; \
+	cleanup() { \
+		echo ""; \
+		echo "Stopping all processes..."; \
+		for p in $$pids; do \
+			if [ -n "$$p" ] && kill -0 $$p 2>/dev/null; then \
+				echo "Killing process tree rooted at PID $$p"; \
+				kill_tree $$p; \
+			fi; \
+		done; \
+		sleep 1; \
+		for p in $$pids; do \
+			if [ -n "$$p" ] && kill -0 $$p 2>/dev/null; then \
+				echo "Force killing PID $$p"; \
+				kill -9 $$p 2>/dev/null || true; \
+			fi; \
+		done; \
+		exit 0; \
+	}; \
+	trap cleanup INT TERM; \
 	while nc -z "$$server" "$$port" >/dev/null 2>&1; do \
 		port=$$((port + 1)); \
 	done; \
@@ -69,6 +103,7 @@ ai-harness:
 	client_jvm_args="$(AI_HARNESS_JVM_OPENS) $(AI_HARNESS_CLIENT_JVM_ARGS) -Dxmage.aiHarness.server=$$server -Dxmage.aiHarness.port=$$port"; \
 	(cd Mage.Server && $(AI_HARNESS_ENV_VARS) XMAGE_AI_HARNESS_SERVER=$$server XMAGE_AI_HARNESS_PORT=$$port MAVEN_OPTS="$$server_jvm_args" mvn -q exec:java) >"$$server_log" 2>&1 & \
 	server_pid=$$!; \
+	pids="$$server_pid"; \
 	ready=0; \
 	for i in $$(seq 1 $(AI_HARNESS_SERVER_WAIT)); do \
 		if nc -z "$$server" "$$port" >/dev/null 2>&1; then \
@@ -79,7 +114,36 @@ ai-harness:
 	done; \
 	if [ "$$ready" -ne 1 ]; then \
 		echo "Server failed to start on $$server:$$port within $(AI_HARNESS_SERVER_WAIT)s. See $$server_log"; \
-		kill $$server_pid >/dev/null 2>&1 || true; \
+		cleanup; \
 		exit 1; \
 	fi; \
-	cd Mage.Client && $(AI_HARNESS_ENV_VARS) XMAGE_AI_HARNESS_SERVER=$$server XMAGE_AI_HARNESS_PORT=$$port MAVEN_OPTS="$$client_jvm_args" mvn -q exec:java >"$$client_log" 2>&1
+	skeleton_count=0; \
+	if [ -f "$(AI_HARNESS_CONFIG)" ]; then \
+		skeleton_count=$$(python3 -c 'import json,sys; c=json.load(open(sys.argv[1])); print(sum(1 for p in c.get("players",[]) if p.get("type")=="skeleton"))' "$(AI_HARNESS_CONFIG)" 2>/dev/null || echo 0); \
+	fi; \
+	if [ "$$skeleton_count" -gt 0 ]; then \
+		echo "Starting $$skeleton_count skeleton client(s)..."; \
+		skeleton_names=$$(python3 -c 'import json,sys; c=json.load(open(sys.argv[1])); print(" ".join(p.get("name","skeleton-"+str(i)) for i,p in enumerate(c.get("players",[])) if p.get("type")=="skeleton"))' "$(AI_HARNESS_CONFIG)"); \
+		(cd Mage.Client && $(AI_HARNESS_ENV_VARS) XMAGE_AI_HARNESS_SERVER=$$server XMAGE_AI_HARNESS_PORT=$$port MAVEN_OPTS="$$client_jvm_args" mvn -q exec:java) >"$$client_log" 2>&1 & \
+		client_pid=$$!; \
+		pids="$$pids $$client_pid"; \
+		sleep $(AI_HARNESS_SKELETON_DELAY); \
+		idx=0; \
+		for name in $$skeleton_names; do \
+			skeleton_log="$$log_dir/skeleton_$${idx}_$${ts}.log"; \
+			echo "skeleton_$${idx}_log=$$skeleton_log" >> "$$log_dir/last.txt"; \
+			echo "Skeleton $$idx log: $$skeleton_log"; \
+			skeleton_jvm_args="$(AI_HARNESS_JVM_OPENS) -Dxmage.headless.server=$$server -Dxmage.headless.port=$$port -Dxmage.headless.username=$$name"; \
+			(cd Mage.Client.Headless && MAVEN_OPTS="$$skeleton_jvm_args" mvn -q exec:java) >"$$skeleton_log" 2>&1 & \
+			pids="$$pids $$!"; \
+			idx=$$((idx + 1)); \
+		done; \
+		wait $$client_pid; \
+		cleanup; \
+	else \
+		(cd Mage.Client && $(AI_HARNESS_ENV_VARS) XMAGE_AI_HARNESS_SERVER=$$server XMAGE_AI_HARNESS_PORT=$$port MAVEN_OPTS="$$client_jvm_args" mvn -q exec:java) >"$$client_log" 2>&1 & \
+		client_pid=$$!; \
+		pids="$$pids $$client_pid"; \
+		wait $$client_pid; \
+		cleanup; \
+	fi
