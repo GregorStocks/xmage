@@ -1,5 +1,3 @@
-Use `bd` for task tracking. See `doc/beads.md` and `doc/skills/solve-bead.md`.
-
 ## Code Isolation Philosophy
 
 ### Goal
