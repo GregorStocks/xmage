@@ -50,7 +50,6 @@ def compile_project(project_root: Path, streaming: bool = False) -> bool:
             "mvn",
             "-q",
             "-DskipTests",
-            "-Dmaven.build.cache.enabled=false",
             "-pl",
             modules,
             "-am",
