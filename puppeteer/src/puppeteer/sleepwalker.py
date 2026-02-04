@@ -46,13 +46,16 @@ async def run_sleepwalker(
     print(f"[sleepwalker] Starting for {username}@{server}:{port}")
 
     # Build JVM args for the skeleton
-    jvm_args = " ".join([
+    jvm_args_list = [
         "--add-opens=java.base/java.io=ALL-UNNAMED",
         f"-Dxmage.headless.server={server}",
         f"-Dxmage.headless.port={port}",
         f"-Dxmage.headless.username={username}",
         "-Dxmage.headless.personality=sleepwalker",
-    ])
+    ]
+    if sys.platform == "darwin":
+        jvm_args_list.append("-Dapple.awt.UIElement=true")
+    jvm_args = " ".join(jvm_args_list)
 
     # Set up environment
     env = os.environ.copy()
