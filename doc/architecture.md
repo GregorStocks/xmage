@@ -21,7 +21,6 @@ The stock XMage server's `testMode` (`-Dxmage.testMode=true`) already provides:
 - Skipped password verification during login
 - Skipped deck validation
 - Extended idle timeouts (1 hour instead of seconds)
-- Skipped user stats DB operations
 
 This is sufficient for AI harness use cases.
 
@@ -49,7 +48,7 @@ Where possible, puppeteer should use the server's existing RMI API rather than a
 
 As of this writing, the fork maintains **minimal changes** to server code:
 
-- `Mage.Server/` - two fixes to skip user stats in testMode (workaround for Apple Silicon SQLite crash)
+- `Mage.Server/pom.xml` - updated sqlite-jdbc from 3.32.3.2 to 3.46.1.0 (adds Apple Silicon support, upstream is outdated)
 - `Mage.Common/` - completely stock XMage
 
 All AI harness functionality is implemented in:

@@ -695,17 +695,6 @@ public class User {
         if (userData == null) {
             return;
         }
-        // Skip user stats in testMode (avoids SQLite issues on Apple Silicon)
-        if (Main.isTestMode()) {
-            userData.setMatchHistory("0");
-            userData.setMatchQuitRatio(0);
-            userData.setTourneyHistory("0");
-            userData.setTourneyQuitRatio(0);
-            userData.setGeneralRating(GlickoRatingSystem.getDefaultDisplayedRating());
-            userData.setConstructedRating(GlickoRatingSystem.getDefaultDisplayedRating());
-            userData.setLimitedRating(GlickoRatingSystem.getDefaultDisplayedRating());
-            return;
-        }
         userStats = UserStatsRepository.instance.getUser(this.userName);
         if (userStats != null) {
             ResultProtos.UserStatsProto userStatsProto = userStats.getProto();
