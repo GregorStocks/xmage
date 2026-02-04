@@ -1,5 +1,6 @@
 """Configuration for the AI harness."""
 
+import sys
 from dataclasses import dataclass, field
 from pathlib import Path
 import json
@@ -47,6 +48,14 @@ class Config:
     skeleton_delay: int = 5
     log_dir: Path = field(default_factory=lambda: Path(".context/ai-harness-logs"))
     jvm_opens: str = "--add-opens=java.base/java.io=ALL-UNNAMED"
+
+    @property
+    def jvm_headless_opts(self) -> str:
+        """JVM options for headless (non-GUI) processes."""
+        opts = [self.jvm_opens]
+        if sys.platform == "darwin":
+            opts.append("-Dapple.awt.UIElement=true")
+        return " ".join(opts)
 
     # CLI options
     skip_compile: bool = False

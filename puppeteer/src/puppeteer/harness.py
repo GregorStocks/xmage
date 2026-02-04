@@ -77,7 +77,7 @@ def start_server(
     - Skipped user stats operations
     """
     jvm_args = " ".join([
-        config.jvm_opens,
+        config.jvm_headless_opts,
         "-Dxmage.testMode=true",
         f"-Dxmage.config.path={config_path}",
     ])
@@ -166,7 +166,7 @@ def start_potato_client(
 ) -> subprocess.Popen:
     """Start a potato client (pure Java, auto-responds)."""
     jvm_args = " ".join([
-        config.jvm_opens,
+        config.jvm_headless_opts,
         f"-Dxmage.headless.server={config.server}",
         f"-Dxmage.headless.port={config.port}",
         f"-Dxmage.headless.username={name}",
