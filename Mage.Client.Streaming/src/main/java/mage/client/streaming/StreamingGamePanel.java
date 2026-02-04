@@ -3,6 +3,7 @@ package mage.client.streaming;
 import mage.cards.Card;
 import mage.client.MagePane;
 import mage.client.SessionHandler;
+import mage.client.dialog.PreferencesDialog;
 import mage.client.game.GamePanel;
 import mage.client.game.PlayAreaPanel;
 import mage.client.game.PlayAreaPanelOptions;
@@ -79,7 +80,8 @@ public class StreamingGamePanel extends GamePanel {
     }
 
     /**
-     * Hide the central hand container panel using reflection.
+     * Hide the entire bottom commands area (hand, feedback, stack, skip buttons).
+     * Observers don't need any of these controls.
      * This keeps all streaming-specific UI changes isolated to this class.
      */
     private void hideHandContainer() {
@@ -88,21 +90,24 @@ public class StreamingGamePanel extends GamePanel {
         }
 
         try {
-            // Hide handContainer
-            Field handContainerField = GamePanel.class.getDeclaredField("handContainer");
-            handContainerField.setAccessible(true);
-            JPanel handContainer = (JPanel) handContainerField.get(this);
-            if (handContainer != null) {
-                handContainer.setVisible(false);
-                Container parent = handContainer.getParent();
-                if (parent != null) {
-                    parent.remove(handContainer);
-                    parent.revalidate();
-                    parent.repaint();
+            // Get pnlHelperHandButtonsStackArea which contains the bottom commands area
+            Field helperAreaField = GamePanel.class.getDeclaredField("pnlHelperHandButtonsStackArea");
+            helperAreaField.setAccessible(true);
+            JPanel helperArea = (JPanel) helperAreaField.get(this);
+
+            if (helperArea != null && helperArea.getLayout() instanceof BorderLayout) {
+                BorderLayout layout = (BorderLayout) helperArea.getLayout();
+                // Find and hide the SOUTH component (pnlCommandsRoot)
+                Component southComponent = layout.getLayoutComponent(BorderLayout.SOUTH);
+                if (southComponent != null) {
+                    southComponent.setVisible(false);
+                    helperArea.remove(southComponent);
+                    helperArea.revalidate();
+                    helperArea.repaint();
                 }
             }
 
-            // Hide btnSwitchHands
+            // Also hide btnSwitchHands
             Field btnSwitchHandsField = GamePanel.class.getDeclaredField("btnSwitchHands");
             btnSwitchHandsField.setAccessible(true);
             JButton btnSwitchHands = (JButton) btnSwitchHandsField.get(this);
@@ -110,18 +115,29 @@ public class StreamingGamePanel extends GamePanel {
                 btnSwitchHands.setVisible(false);
             }
 
-            // Collapse the split pane to hide the left component (hand area) entirely
-            Field splitHandAndStackField = GamePanel.class.getDeclaredField("splitHandAndStack");
-            splitHandAndStackField.setAccessible(true);
-            JSplitPane splitHandAndStack = (JSplitPane) splitHandAndStackField.get(this);
-            if (splitHandAndStack != null) {
-                splitHandAndStack.setDividerLocation(0);
-                splitHandAndStack.setDividerSize(0);
-            }
-
             handContainerHidden = true;
         } catch (NoSuchFieldException | IllegalAccessException e) {
             logger.warn("Failed to hide hand container via reflection", e);
+        }
+    }
+
+    @Override
+    public void onActivated() {
+        // Remove the hand/stack splitter from restoration before activating
+        // This prevents restoreSplitters() from overriding our hideHandContainer() changes
+        removeSplitterFromRestore();
+        super.onActivated();
+    }
+
+    private void removeSplitterFromRestore() {
+        try {
+            Field splittersField = GamePanel.class.getDeclaredField("splitters");
+            splittersField.setAccessible(true);
+            @SuppressWarnings("unchecked")
+            Map<String, ?> splitters = (Map<String, ?>) splittersField.get(this);
+            splitters.remove(PreferencesDialog.KEY_GAMEPANEL_DIVIDER_LOCATIONS_HAND_STACK);
+        } catch (NoSuchFieldException | IllegalAccessException e) {
+            logger.warn("Failed to remove hand/stack splitter from restore", e);
         }
     }
 
