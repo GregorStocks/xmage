@@ -7,6 +7,7 @@ import mage.client.SessionHandler;
 import mage.client.chat.ChatPanelBasic;
 import mage.client.components.MageComponents;
 import mage.client.dialog.*;
+import mage.client.util.AiHarnessConfig;
 import mage.client.util.GUISizeHelper;
 import mage.client.util.IgnoreList;
 import mage.client.util.MageTableRowSorter;
@@ -1692,7 +1693,104 @@ public class TablesPanel extends javax.swing.JPanel {
     }
 
     private void createAiHarnessGame() {
-        createQuickGame("Commander AI Harness", "Commander Free For All", PlayerType.COMPUTER_MAD, 4, false);
+        AiHarnessConfig config = AiHarnessConfig.load();
+        createConfiguredAiHarnessGame(config);
+    }
+
+    private void createConfiguredAiHarnessGame(AiHarnessConfig config) {
+        TableView table;
+        try {
+            String testDeckFile = "test.dck";
+            File f = new File(testDeckFile);
+            if (!f.exists()) {
+                testDeckFile = DeckUtil.writeTextToTempFile(""
+                        + "5 Swamp" + System.lineSeparator()
+                        + "5 Forest" + System.lineSeparator()
+                        + "5 Island" + System.lineSeparator()
+                        + "5 Mountain" + System.lineSeparator()
+                        + "5 Plains");
+            }
+            DeckCardLists testDeck = DeckImporter.importDeckFromFile(testDeckFile, false);
+
+            int numPlayers = config.getPlayers().size();
+            int botCount = config.getBotCount();
+            List<DeckCardLists> aiDecks = pickAiHarnessDecks(botCount, testDeck);
+
+            MatchOptions options = new MatchOptions("Commander AI Harness", "Commander Free For All", numPlayers > 2);
+            for (AiHarnessConfig.PlayerConfig player : config.getPlayers()) {
+                options.getPlayerTypes().add(player.getPlayerType());
+            }
+            options.setDeckType("Variant Magic - Freeform Commander");
+            options.setAttackOption(MultiplayerAttackOption.MULTIPLE);
+            options.setRange(RangeOfInfluence.ONE);
+            options.setWinsNeeded(2);
+            options.setMatchTimeLimit(MatchTimeLimit.NONE);
+            options.setMatchBufferTime(MatchBufferTime.NONE);
+            options.setFreeMulligans(2);
+            options.setSkillLevel(SkillLevel.CASUAL);
+            options.setRollbackTurnsAllowed(true);
+            options.setQuitRatio(100);
+            options.setMinimumRating(0);
+            options.setSpectatorsAllowed(true);
+            String serverAddress = SessionHandler.getSession().getServerHost();
+            options.setBannedUsers(IgnoreList.getIgnoredUsers(serverAddress));
+            table = SessionHandler.createTable(roomId, options);
+
+            int deckIndex = 0;
+            for (AiHarnessConfig.PlayerConfig player : config.getPlayers()) {
+                String name = player.name != null ? player.name : ("Player " + (deckIndex + 1));
+                PlayerType playerType = player.getPlayerType();
+                DeckCardLists deckToUse = "bot".equals(player.type) && deckIndex < aiDecks.size()
+                        ? aiDecks.get(deckIndex) : testDeck;
+
+                if ("skeleton".equals(player.type)) {
+                    // Skeleton players join via the headless client, don't join here
+                    LOGGER.info("AI Harness: slot reserved for skeleton client: " + name);
+                } else {
+                    boolean joined = SessionHandler.joinTable(roomId, table.getTableId(), name, playerType, 1, deckToUse, "");
+                    LOGGER.info("AI Harness: joined " + name + " (" + playerType + ") -> " + joined);
+                }
+                if ("bot".equals(player.type)) {
+                    deckIndex++;
+                }
+            }
+
+            // Only start match if there are no skeleton slots (all bots)
+            if (config.getSkeletonCount() == 0) {
+                SessionHandler.startMatch(roomId, table.getTableId());
+            } else {
+                LOGGER.info("AI Harness: waiting for " + config.getSkeletonCount() + " skeleton client(s) to join table " + table.getTableId());
+                // Start a thread to wait for skeletons and then start the match
+                final UUID finalTableId = table.getTableId();
+                Thread starter = new Thread(() -> {
+                    long deadline = System.currentTimeMillis() + TimeUnit.SECONDS.toMillis(60);
+                    while (System.currentTimeMillis() < deadline) {
+                        try {
+                            Collection<TableView> tables = SessionHandler.getTables(roomId);
+                            for (TableView tv : tables) {
+                                if (finalTableId.equals(tv.getTableId())) {
+                                    if (tv.getTableState() == TableState.READY_TO_START) {
+                                        LOGGER.info("AI Harness: all players joined, starting match for table " + finalTableId);
+                                        SessionHandler.startMatch(roomId, finalTableId);
+                                        return;
+                                    }
+                                    break;
+                                }
+                            }
+                            Thread.sleep(1000);
+                        } catch (Exception e) {
+                            LOGGER.warn("AI Harness: error polling for ready state", e);
+                        }
+                    }
+                    LOGGER.warn("AI Harness: timed out waiting for table to be ready: " + finalTableId);
+                }, "AIHarness-MatchStarter");
+                starter.setDaemon(true);
+                starter.start();
+            }
+            maybeAutoWatchAiHarnessTable(table.getTableId());
+        } catch (HeadlessException ex) {
+            handleError(ex);
+        }
     }
 
     private void maybeAutoStartAiHarnessGame() {
