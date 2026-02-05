@@ -1,15 +1,11 @@
 ## Code Isolation Philosophy
 
-Minimize changes to baseline XMage code to enable clean rebasing against upstream.
+Don't touch Java outside of `Mage.Client.Streaming` and `Mage.Client.Headless`. This means avoiding changes to `Mage.Client`, `Mage.Server*`, `Mage.Common`, `Mage`, `Mage.Sets`, etc. This keeps us in sync with upstream XMage.
 
-**Baseline (avoid modifying):** `Mage.Client`, `Mage.Server*`, `Mage.Common`, `Mage`, `Mage.Sets`
-
-**Our code (where changes should live):**
+**Our code:**
 - `Mage.Client.Streaming` - streaming/observer client
 - `Mage.Client.Headless` - headless client for AI harness
 - `puppeteer/` - Python orchestration
-
-See [doc/architecture.md](doc/architecture.md) for details on acceptable baseline modifications and current audit.
 
 ## Python
 
