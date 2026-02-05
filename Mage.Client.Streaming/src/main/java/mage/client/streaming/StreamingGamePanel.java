@@ -399,15 +399,16 @@ public class StreamingGamePanel extends GamePanel {
 
             boolean changed = !toRemove.isEmpty() || !toAdd.isEmpty();
 
-            // Get current card dimension from existing cards (keep same size, no resize flash)
-            Dimension currentDimension = GUISizeHelper.handCardDimension;
-            for (MageCard existing : cardsMap.values()) {
-                currentDimension = new Dimension(
-                        existing.getCardLocation().getCardWidth(),
-                        existing.getCardLocation().getCardHeight()
-                );
-                break;
+            if (!changed) {
+                return;
             }
+
+            // Hide card area during update to prevent intermediate states from being visible
+            cardArea.setVisible(false);
+
+            // Calculate new card dimension for the updated count
+            int newCardCount = currentIds.size();
+            Dimension newDimension = calculateScaledCardDimension(scrollPane, newCardCount);
 
             // Remove cards that are no longer in hand
             for (UUID cardId : toRemove) {
@@ -417,24 +418,29 @@ public class StreamingGamePanel extends GamePanel {
                 }
             }
 
-            // Add new cards at the same size as existing cards (no resize = no flash)
+            // Add new cards at the correct scaled size
             if (currentHand != null) {
                 for (UUID cardId : toAdd) {
                     CardView cardView = currentHand.get(cardId);
                     if (cardView != null) {
-                        addCardToHandWithDimension(hand, cardArea, cardsMap, cardView, currentDimension);
+                        addCardToHandWithDimension(hand, cardArea, cardsMap, cardView, newDimension);
                     }
                 }
             }
 
-            // Only do layout if something changed
-            if (changed) {
-                // Layout cards without resizing
-                layoutHandCards(cardArea, Zone.HAND);
-
-                // Update card area preferred size
-                hand.sizeCards(currentDimension);
+            // Resize all existing cards to the new dimension
+            for (MageCard card : cardsMap.values()) {
+                card.setCardBounds(0, 0, newDimension.width, newDimension.height);
             }
+
+            // Layout cards
+            layoutHandCards(cardArea, Zone.HAND);
+
+            // Update card area preferred size
+            hand.sizeCards(newDimension);
+
+            // Show card area after all changes are complete
+            cardArea.setVisible(true);
 
             // Ensure hand panel is visible if it has cards
             if (!cardsMap.isEmpty()) {
