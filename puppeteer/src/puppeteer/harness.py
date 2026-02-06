@@ -447,6 +447,8 @@ def main() -> int:
             # Copy config into game directory for reference
             shutil.copy2(config.config_file, game_dir / "config.json")
 
+        config.resolve_random_decks(project_root)
+
         import time
 
         # Choose which observer client to start (streaming or regular GUI)

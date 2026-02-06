@@ -1,5 +1,6 @@
 """Configuration for the AI harness."""
 
+import random
 import sys
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -133,3 +134,27 @@ class Config:
                 elif player_type == "skeleton":
                     # Legacy: treat as potato for backwards compatibility
                     self.potato_players.append(PotatoPlayer(name=name, deck=deck))
+
+    def resolve_random_decks(self, project_root: Path) -> None:
+        """Replace any deck="random" with a randomly chosen Commander .dck file."""
+        all_players = (
+            self.potato_players +
+            self.sleepwalker_players +
+            self.chatterbox_players +
+            self.cpu_players +
+            self.skeleton_players
+        )
+        if not any(p.deck == "random" for p in all_players):
+            return
+
+        commander_dir = project_root / "Mage.Client" / "release" / "sample-decks" / "Commander"
+        decks = [p.relative_to(project_root) for p in commander_dir.rglob("*.dck")]
+        if not decks:
+            print("WARNING: No .dck files found in Commander directory, keeping 'random' as-is")
+            return
+
+        for player in all_players:
+            if player.deck == "random":
+                chosen = random.choice(decks)
+                player.deck = str(chosen)
+                print(f"Random deck for {player.name}: {chosen.name}")
