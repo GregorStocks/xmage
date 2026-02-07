@@ -7,6 +7,7 @@ import mage.client.MagePane;
 import mage.client.SessionHandler;
 import mage.client.cards.Cards;
 import mage.client.chat.ChatPanelBasic;
+import mage.client.dialog.MageDialog;
 import mage.client.dialog.PreferencesDialog;
 import mage.client.game.ExilePanel;
 import mage.client.game.GamePanel;
@@ -90,6 +91,9 @@ public class StreamingGamePanel extends GamePanel {
     // Commander avatar replacement (player UUID -> commander UUID that was used)
     private final Map<UUID, UUID> playerCommanderAvatars = new HashMap<>();
 
+    // Popup auto-dismissal tracking (dialog keys that already have a dismiss timer scheduled)
+    private final Set<String> scheduledDismissals = new HashSet<>();
+
     // LLM cost display support
     private final Map<UUID, JLabel> costLabels = new HashMap<>();
     private final Map<String, Double> playerCosts = new HashMap<>();
@@ -153,18 +157,24 @@ public class StreamingGamePanel extends GamePanel {
 
     @Override
     public synchronized void init(int messageId, GameView game, boolean callGameUpdateAfterInit) {
+        // Adjust battlefield card size bounds before the first layout
+        adjustBattlefieldCardSizes();
         super.init(messageId, game, callGameUpdateAfterInit);
         this.lastGame = game;
         // Hide the central hand container (we show hands in play areas instead)
         hideHandContainer();
         requestHandPermissions(game);
         initCostPolling();
+        // Schedule auto-dismissal of any popup dialogs created during init
+        schedulePopupDismissal();
     }
 
     @Override
     public synchronized void updateGame(int messageId, GameView game) {
         super.updateGame(messageId, game);
         this.lastGame = game;
+        // Schedule auto-dismissal of any popup dialogs created by the parent
+        schedulePopupDismissal();
         // Hide the central hand container (we show hands in play areas instead)
         hideHandContainer();
         // Also try to request permissions on updates in case we missed init
@@ -323,6 +333,77 @@ public class StreamingGamePanel extends GamePanel {
             splitters.remove(PreferencesDialog.KEY_GAMEPANEL_DIVIDER_LOCATIONS_CHAT_AND_LOGS);
         } catch (NoSuchFieldException | IllegalAccessException e) {
             logger.warn("Failed to remove splitters from restore", e);
+        }
+    }
+
+    /**
+     * Adjust battlefield card size bounds for streaming mode.
+     * Lowers the max so cards aren't enormous on sparse boards,
+     * and lowers the min so cards shrink further before overflow kicks in.
+     * Must be called before super.init() triggers the first layout.
+     */
+    private void adjustBattlefieldCardSizes() {
+        // Cap max: ~100px wide (default is ~156px). Aspect ratio 312:445.
+        GUISizeHelper.battlefieldCardMaxDimension = new Dimension(100, 143);
+        // Lower min: ~20px wide (default is ~52px). Allows aggressive shrinking.
+        GUISizeHelper.battlefieldCardMinDimension = new Dimension(20, 29);
+        // Propagate to the card layout plugin
+        Plugins.instance.changeGUISize();
+    }
+
+    /**
+     * Schedule auto-dismissal of popup dialogs created by the parent GamePanel.
+     * Reflects into the parent's private dialog maps, finds newly-appeared dialogs,
+     * and schedules a 15-second timer to hide each one.
+     */
+    private void schedulePopupDismissal() {
+        scheduleDismissalForMap("revealed");
+        scheduleDismissalForMap("lookedAt");
+        scheduleDismissalForMap("companion");
+        scheduleDismissalForMap("graveyardWindows");
+        scheduleDismissalForMap("sideboardWindows");
+    }
+
+    /**
+     * Helper: reflect into a named Map<String, ? extends MageDialog> field in GamePanel,
+     * find new entries, and schedule a 15-second dismiss timer for each.
+     */
+    @SuppressWarnings("unchecked")
+    private void scheduleDismissalForMap(String fieldName) {
+        try {
+            Field field = GamePanel.class.getDeclaredField(fieldName);
+            field.setAccessible(true);
+            Map<String, ? extends MageDialog> map = (Map<String, ? extends MageDialog>) field.get(this);
+
+            for (Map.Entry<String, ? extends MageDialog> entry : map.entrySet()) {
+                String key = fieldName + ":" + entry.getKey();
+                if (scheduledDismissals.contains(key)) {
+                    continue; // Already scheduled
+                }
+                scheduledDismissals.add(key);
+
+                MageDialog dialog = entry.getValue();
+                String dialogKey = entry.getKey();
+                Timer dismissTimer = new Timer(15000, e -> {
+                    dialog.hideDialog();
+                    // Remove from parent's map so it doesn't accumulate
+                    try {
+                        Field f = GamePanel.class.getDeclaredField(fieldName);
+                        f.setAccessible(true);
+                        Map<String, ?> m = (Map<String, ?>) f.get(this);
+                        m.remove(dialogKey);
+                    } catch (Exception ex) {
+                        // Best effort cleanup
+                    }
+                    scheduledDismissals.remove(key);
+                });
+                dismissTimer.setRepeats(false);
+                dismissTimer.start();
+
+                logger.info("Scheduled 15s auto-dismiss for " + fieldName + " dialog: " + entry.getKey());
+            }
+        } catch (NoSuchFieldException | IllegalAccessException e) {
+            logger.warn("Failed to schedule dismissal for " + fieldName, e);
         }
     }
 
