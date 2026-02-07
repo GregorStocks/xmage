@@ -55,6 +55,7 @@ def _write_cost_file(game_dir: Path, username: str, cost: float) -> None:
 # wait_for_action is strictly better).
 PILOT_TOOLS = {
     "wait_for_action",
+    "pass_priority",
     "get_action_choices",
     "choose_action",
     "get_game_state",
@@ -64,38 +65,33 @@ PILOT_TOOLS = {
 }
 
 DEFAULT_SYSTEM_PROMPT = """\
-You are a skilled Magic: The Gathering player controlling a player in a Commander game.
+You are a Magic: The Gathering player in a Commander game. You have a fun, \
+trash-talking personality. Use send_chat_message to comment on the game - react to big \
+plays, taunt opponents, celebrate your own plays, and have fun! Send a chat message \
+every few turns.
 
-Your game loop:
-1. Call wait_for_action to wait for the game to need your input
+GAME LOOP:
+1. Call pass_priority to wait until you can actually do something \
+   (it auto-skips empty priorities where you have no playable cards)
 2. Call get_action_choices to see what you can do
 3. Call choose_action with your decision
 4. Go back to step 1
 
-For important decisions (casting spells, choosing targets, combat), consider calling \
-get_game_state first to assess the board.
+HOW ACTIONS WORK:
+- get_action_choices tells you the phase (is_my_main_phase, step, active_player) and \
+  available plays.
+- response_type=select: Every card listed is playable RIGHT NOW - the game only shows \
+  cards you can afford to cast with your current mana. Play a card with \
+  choose_action(index=N), or pass priority with answer=false.
+- response_type=boolean: No cards are playable. Pass priority with answer=false.
+- GAME_ASK (boolean): Answer true/false. For MULLIGAN: your_hand shows your hand.
+- GAME_CHOOSE_ABILITY (index): Pick an ability by index.
+- GAME_TARGET (index): Pick a target by index.
+- GAME_PLAY_MANA (select): Mana is usually paid automatically, but if the auto-tapper \
+  can't figure it out, you'll see available mana sources. Pick one by index to tap it, \
+  or answer=false to cancel the spell.
 
-Decision guidelines:
-- GAME_SELECT (response_type=boolean): true = take action, false = pass. \
-  Say true when you have spells to cast, lands to play, or abilities to activate. \
-  Say false to pass priority when you have nothing useful to do.
-- GAME_ASK (response_type=boolean): Read the question carefully and answer yes/no.
-- GAME_CHOOSE_ABILITY (response_type=index): Pick the best ability. Play lands when \
-  possible, cast creatures and removal spells, activate useful abilities.
-- GAME_TARGET (response_type=index): Pick the best target. Prioritize removing \
-  threatening creatures and problematic permanents.
-- GAME_PLAY_MANA (response_type=boolean): Almost always answer false (auto-pay).
-
-Strategy:
-- Play a land every turn when possible
-- Cast creatures and spells when you have mana
-- Attack when you have favorable combat
-- Remove threatening permanents
-- Keep mana open for responses when appropriate
-- In Commander, spread damage and don't make yourself the biggest threat early
-
-IMPORTANT: Always call get_action_choices before choose_action. \
-The index values in choose_action correspond to the choices array from get_action_choices.\
+IMPORTANT: Always call get_action_choices before choose_action.\
 """
 
 
@@ -130,12 +126,8 @@ def should_auto_pass(action_info: dict) -> tuple[bool, dict | None]:
     Returns (should_auto, choose_args) where choose_args is the
     arguments to pass to choose_action if should_auto is True.
     """
-    action_type = action_info.get("action_type", "")
-
-    # Always auto-handle mana payment
-    if action_type in ("GAME_PLAY_MANA", "GAME_PLAY_XMANA"):
-        return True, {"answer": False}
-
+    # GAME_PLAY_MANA is handled automatically by the Java client (auto-taps lands)
+    # so it should never reach the pilot. No other actions are auto-passed.
     return False, None
 
 
@@ -155,6 +147,7 @@ async def run_pilot_loop(
     ]
     input_price, output_price = _get_model_price(model)
     cumulative_cost = 0.0
+    empty_responses = 0  # consecutive LLM responses with no reasoning text
 
     while True:
         # Check for auto-passable actions before calling LLM
@@ -190,9 +183,12 @@ async def run_pilot_loop(
 
             # If the LLM produced tool calls, process them
             if choice.message.tool_calls:
-                # Show LLM reasoning alongside tool calls
+                # Tool calls present = LLM is functioning, reset degradation counter.
+                # Gemini often omits reasoning text for obvious actions (like passing) -
+                # that's normal, not degradation.
                 if choice.message.content:
                     print(f"[pilot] Thinking: {choice.message.content}")
+                empty_responses = 0
                 messages.append(choice.message)
 
                 for tool_call in choice.message.tool_calls:
@@ -245,17 +241,36 @@ async def run_pilot_loop(
                 if content:
                     print(f"[pilot] Thinking: {content[:500]}")
                     messages.append({"role": "assistant", "content": content})
+                    empty_responses = 0
+                else:
+                    empty_responses += 1
+                    print(f"[pilot] Empty response from LLM (no tools, no text) [{empty_responses}]")
+                    if empty_responses >= 10:
+                        print("[pilot] LLM appears degraded (no tools or text), switching to auto-pass mode")
+                        try:
+                            await execute_tool(session, "send_chat_message", {"message": "My brain is fried... going on autopilot for the rest of this game. GG!"})
+                        except Exception:
+                            pass
+                        while True:
+                            try:
+                                await execute_tool(session, "auto_pass_until_event", {})
+                            except Exception as pass_err:
+                                print(f"[pilot] Auto-pass error: {pass_err}")
+                                await asyncio.sleep(5)
                 messages.append({
                     "role": "user",
                     "content": "Continue playing. Call wait_for_action.",
                 })
 
-            # Trim message history to avoid unbounded growth
-            if len(messages) > 40:
+            # Trim message history to avoid unbounded growth.
+            # The game loop is tool-call-heavy (3+ messages per action), so we need
+            # a generous limit to avoid constant trimming that degrades LLM reasoning.
+            if len(messages) > 120:
+                print(f"[pilot] Trimming context: {len(messages)} -> ~82 messages")
                 messages = (
                     [messages[0]]
-                    + [{"role": "user", "content": "Continue playing. Make strategic decisions. Always call get_action_choices before choose_action."}]
-                    + messages[-25:]
+                    + [{"role": "user", "content": "Continue playing. Use pass_priority to skip ahead, then get_action_choices before choose_action. All cards listed are playable right now. Play cards with index=N, pass with answer=false."}]
+                    + messages[-80:]
                 )
 
         except Exception as e:

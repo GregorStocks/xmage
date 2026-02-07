@@ -20,6 +20,8 @@ import mage.view.PermanentView;
 import mage.view.PlayerView;
 import mage.view.TableClientMessage;
 import mage.view.UserRequestMessage;
+import mage.players.PlayableObjectsList;
+import mage.players.PlayableObjectStats;
 import mage.util.MultiAmountMessage;
 
 import java.io.Serializable;
@@ -27,6 +29,7 @@ import org.apache.log4j.Logger;
 
 import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -57,6 +60,8 @@ public class SkeletonCallbackHandler {
     private volatile UUID currentGameId = null;
     private volatile GameView lastGameView = null;
     private volatile List<Object> lastChoices = null; // Index→UUID/String mapping for choose_action
+    private final Set<UUID> failedManaCasts = new HashSet<>(); // Spells that failed mana payment (avoid retry loops)
+    private volatile int lastTurnNumber = -1; // For clearing failedManaCasts on turn change
 
     public SkeletonCallbackHandler(SkeletonMageClient client) {
         this.client = client;
@@ -142,6 +147,13 @@ public class SkeletonCallbackHandler {
                 result.put("action_taken", "passed_priority");
                 break;
 
+            case GAME_PLAY_MANA:
+            case GAME_PLAY_XMANA:
+                // Auto-tap failed; default action is to cancel the spell
+                session.sendPlayerBoolean(gameId, false);
+                result.put("action_taken", "cancelled_mana");
+                break;
+
             case GAME_TARGET:
                 GameClientMessage targetMsg = (GameClientMessage) data;
                 boolean required = targetMsg.isFlag();
@@ -206,12 +218,6 @@ public class SkeletonCallbackHandler {
                 result.put("action_taken", "selected_pile_1");
                 break;
 
-            case GAME_PLAY_MANA:
-            case GAME_PLAY_XMANA:
-                session.sendPlayerBoolean(gameId, false);
-                result.put("action_taken", "cancelled_mana");
-                break;
-
             case GAME_GET_AMOUNT:
                 GameClientMessage amountMsg = (GameClientMessage) data;
                 int min = amountMsg.getMin();
@@ -259,21 +265,223 @@ public class SkeletonCallbackHandler {
         result.put("action_type", action.getMethod().name());
         result.put("message", action.getMessage());
 
+        // Add phase context so the LLM knows when to cast aggressively
+        if (lastGameView != null) {
+            result.put("turn", lastGameView.getTurn());
+            if (lastGameView.getPhase() != null) {
+                result.put("phase", lastGameView.getPhase().toString());
+            }
+            if (lastGameView.getStep() != null) {
+                result.put("step", lastGameView.getStep().toString());
+            }
+            result.put("active_player", lastGameView.getActivePlayerName());
+            boolean isMyTurn = client.getUsername().equals(lastGameView.getActivePlayerName());
+            boolean isMainPhase = lastGameView.getPhase() != null && lastGameView.getPhase().isMain();
+            result.put("is_my_main_phase", isMyTurn && isMainPhase);
+        }
+
         ClientCallbackMethod method = action.getMethod();
         Object data = action.getData();
 
         switch (method) {
-            case GAME_ASK:
+            case GAME_ASK: {
                 result.put("response_type", "boolean");
                 result.put("hint", "true = Yes, false = No");
                 lastChoices = null;
-                break;
 
-            case GAME_SELECT:
-                result.put("response_type", "boolean");
-                result.put("hint", "true = Yes/Proceed, false = No/Pass priority");
-                lastChoices = null;
+                // For mulligan decisions, include hand contents so LLM can evaluate
+                String askMsg = action.getMessage();
+                if (askMsg != null && askMsg.toLowerCase().contains("mulligan") && lastGameView != null) {
+                    CardsView hand = lastGameView.getMyHand();
+                    if (hand != null && !hand.isEmpty()) {
+                        List<Map<String, Object>> handCards = new ArrayList<>();
+                        for (CardView card : hand.values()) {
+                            Map<String, Object> cardInfo = new HashMap<>();
+                            cardInfo.put("name", card.getDisplayName());
+                            String manaCost = card.getManaCostStr();
+                            if (manaCost != null && !manaCost.isEmpty()) {
+                                cardInfo.put("mana_cost", manaCost);
+                            }
+                            cardInfo.put("mana_value", card.getManaValue());
+                            if (card.isLand()) {
+                                cardInfo.put("is_land", true);
+                            }
+                            if (card.isCreature() && card.getPower() != null) {
+                                cardInfo.put("power", card.getPower());
+                                cardInfo.put("toughness", card.getToughness());
+                            }
+                            handCards.add(cardInfo);
+                        }
+                        result.put("your_hand", handCards);
+                        // Count lands for quick evaluation
+                        int landCount = 0;
+                        for (CardView card : hand.values()) {
+                            if (card.isLand()) landCount++;
+                        }
+                        result.put("land_count", landCount);
+                        result.put("hand_size", hand.size());
+                    }
+                }
                 break;
+            }
+
+            case GAME_SELECT: {
+                // Check for playable cards in the current game view
+                PlayableObjectsList playable = lastGameView != null ? lastGameView.getCanPlayObjects() : null;
+                List<Map<String, Object>> choiceList = new ArrayList<>();
+                List<Object> indexToUuid = new ArrayList<>();
+
+                if (playable != null && !playable.isEmpty()) {
+                    // Clear failed casts on turn change
+                    if (lastGameView != null) {
+                        int turn = lastGameView.getTurn();
+                        if (turn != lastTurnNumber) {
+                            lastTurnNumber = turn;
+                            failedManaCasts.clear();
+                        }
+                    }
+
+                    int idx = 0;
+                    for (Map.Entry<UUID, PlayableObjectStats> entry : playable.getObjects().entrySet()) {
+                        UUID objectId = entry.getKey();
+                        PlayableObjectStats stats = entry.getValue();
+
+                        // Skip spells that failed mana payment (can't afford them)
+                        if (failedManaCasts.contains(objectId)) {
+                            continue;
+                        }
+
+                        // Skip objects whose only abilities are basic mana tapping
+                        // (mana payment is handled during GAME_PLAY_MANA, not GAME_SELECT)
+                        List<String> abilityNames = stats.getPlayableAbilityNames();
+                        boolean allMana = !abilityNames.isEmpty();
+                        for (String name : abilityNames) {
+                            if (!name.contains("{T}: Add ")) {
+                                allMana = false;
+                                break;
+                            }
+                        }
+                        if (allMana) {
+                            continue;
+                        }
+
+                        Map<String, Object> choiceEntry = new HashMap<>();
+                        choiceEntry.put("index", idx);
+
+                        // Determine where this object lives (hand = cast, battlefield = activate)
+                        CardView cardView = findCardViewById(objectId);
+                        boolean isOnBattlefield = false;
+                        if (cardView == null) {
+                            // not found in hand/stack, check battlefield directly
+                            isOnBattlefield = true;
+                        } else if (lastGameView.getMyHand().get(objectId) == null
+                                   && lastGameView.getStack().get(objectId) == null) {
+                            isOnBattlefield = true;
+                        }
+
+                        if (cardView != null) {
+                            StringBuilder desc = new StringBuilder();
+                            if (isOnBattlefield) {
+                                // Show as activated ability, not a card to cast
+                                // Filter out mana abilities from the description
+                                List<String> nonManaAbilities = new ArrayList<>();
+                                for (String name : abilityNames) {
+                                    if (!name.contains("{T}: Add ")) {
+                                        nonManaAbilities.add(name);
+                                    }
+                                }
+                                desc.append(cardView.getDisplayName());
+                                if (!nonManaAbilities.isEmpty()) {
+                                    desc.append(" — ").append(String.join("; ", nonManaAbilities));
+                                }
+                                desc.append(" [Activate]");
+                            } else {
+                                desc.append(cardView.getDisplayName());
+                                String manaCost = cardView.getManaCostStr();
+                                if (manaCost != null && !manaCost.isEmpty()) {
+                                    desc.append(" ").append(manaCost);
+                                }
+                                if (cardView.isCreature() && cardView.getPower() != null) {
+                                    desc.append(" ").append(cardView.getPower()).append("/").append(cardView.getToughness());
+                                }
+                                if (cardView.isLand()) {
+                                    desc.append(" [Land]");
+                                } else if (cardView.isCreature()) {
+                                    desc.append(" [Creature]");
+                                } else {
+                                    desc.append(" [Cast]");
+                                }
+                            }
+                            choiceEntry.put("description", desc.toString());
+                        } else {
+                            choiceEntry.put("description", "Unknown (" + objectId.toString().substring(0, 8) + ")");
+                        }
+
+                        choiceList.add(choiceEntry);
+                        indexToUuid.add(objectId);
+                        idx++;
+                    }
+                }
+
+                if (!choiceList.isEmpty()) {
+                    result.put("response_type", "select");
+                    result.put("hint", "Pick a card by index to play it, or answer: false to pass priority");
+                    result.put("choices", choiceList);
+                    lastChoices = indexToUuid;
+                } else {
+                    result.put("response_type", "boolean");
+                    result.put("hint", "No playable cards. Answer false to pass priority.");
+                    lastChoices = null;
+                }
+                break;
+            }
+
+            case GAME_PLAY_MANA:
+            case GAME_PLAY_XMANA: {
+                // Auto-tap couldn't find a source — show available mana sources to the LLM
+                GameClientMessage manaMsg = (GameClientMessage) data;
+                result.put("response_type", "select");
+                result.put("hint", "Choose a mana source to tap, or answer: false to cancel the spell.");
+
+                PlayableObjectsList manaPlayable = lastGameView != null ? lastGameView.getCanPlayObjects() : null;
+                List<Map<String, Object>> manaChoiceList = new ArrayList<>();
+                List<Object> manaIndexToUuid = new ArrayList<>();
+
+                if (manaPlayable != null) {
+                    int idx = 0;
+                    for (Map.Entry<UUID, PlayableObjectStats> entry : manaPlayable.getObjects().entrySet()) {
+                        UUID manaObjectId = entry.getKey();
+                        PlayableObjectStats stats = entry.getValue();
+                        List<String> abilityNames = stats.getPlayableAbilityNames();
+
+                        CardView cardView = findCardViewById(manaObjectId);
+                        Map<String, Object> choiceEntry = new HashMap<>();
+                        choiceEntry.put("index", idx);
+
+                        StringBuilder desc = new StringBuilder();
+                        if (cardView != null) {
+                            desc.append(cardView.getDisplayName());
+                        } else {
+                            desc.append("Unknown (" + manaObjectId.toString().substring(0, 8) + ")");
+                        }
+                        // Show what mana it produces
+                        for (String name : abilityNames) {
+                            if (name.contains("{T}: Add ")) {
+                                desc.append(" — ").append(name);
+                                break;
+                            }
+                        }
+                        choiceEntry.put("description", desc.toString());
+                        manaChoiceList.add(choiceEntry);
+                        manaIndexToUuid.add(manaObjectId);
+                        idx++;
+                    }
+                }
+
+                result.put("choices", manaChoiceList);
+                lastChoices = manaIndexToUuid;
+                break;
+            }
 
             case GAME_TARGET: {
                 GameClientMessage msg = (GameClientMessage) data;
@@ -393,13 +601,6 @@ public class SkeletonCallbackHandler {
                 break;
             }
 
-            case GAME_PLAY_MANA:
-            case GAME_PLAY_XMANA:
-                result.put("response_type", "boolean");
-                result.put("hint", "true = auto-pay mana, false = cancel/pass");
-                lastChoices = null;
-                break;
-
             case GAME_GET_AMOUNT: {
                 GameClientMessage msg = (GameClientMessage) data;
                 result.put("response_type", "amount");
@@ -467,18 +668,59 @@ public class SkeletonCallbackHandler {
         try {
             switch (method) {
                 case GAME_ASK:
-                case GAME_SELECT:
-                case GAME_PLAY_MANA:
-                case GAME_PLAY_XMANA:
                     if (answer == null) {
                         result.put("success", false);
                         result.put("error", "Boolean 'answer' required for " + method);
-                        // Re-store the action so it can be retried
                         pendingAction = action;
                         return result;
                     }
                     session.sendPlayerBoolean(gameId, answer);
                     result.put("action_taken", answer ? "yes" : "no");
+                    break;
+
+                case GAME_SELECT:
+                    // Support both index (play a card) and answer (pass priority)
+                    if (index != null) {
+                        if (lastChoices == null || index < 0 || index >= lastChoices.size()) {
+                            result.put("success", false);
+                            result.put("error", "Index " + index + " out of range (call get_action_choices first)");
+                            pendingAction = action;
+                            return result;
+                        }
+                        session.sendPlayerUUID(gameId, (UUID) lastChoices.get(index));
+                        result.put("action_taken", "play_card_" + index);
+                    } else if (answer != null) {
+                        session.sendPlayerBoolean(gameId, answer);
+                        result.put("action_taken", "passed_priority");
+                    } else {
+                        result.put("success", false);
+                        result.put("error", "Provide 'index' to play a card or 'answer: false' to pass priority");
+                        pendingAction = action;
+                        return result;
+                    }
+                    break;
+
+                case GAME_PLAY_MANA:
+                case GAME_PLAY_XMANA:
+                    // index = tap a mana source, answer=false = cancel the spell
+                    if (index != null) {
+                        if (lastChoices == null || index < 0 || index >= lastChoices.size()) {
+                            result.put("success", false);
+                            result.put("error", "Index " + index + " out of range (call get_action_choices first)");
+                            pendingAction = action;
+                            return result;
+                        }
+                        session.sendPlayerUUID(gameId, (UUID) lastChoices.get(index));
+                        result.put("action_taken", "tapped_mana_" + index);
+                    } else if (answer != null && !answer) {
+                        session.sendPlayerBoolean(gameId, false);
+                        result.put("action_taken", "cancelled_spell");
+                    } else {
+                        result.put("success", false);
+                        result.put("error", "Provide 'index' to tap a mana source or 'answer: false' to cancel");
+                        pendingAction = action;
+                        return result;
+                    }
                     break;
 
                 case GAME_TARGET:
@@ -661,6 +903,103 @@ public class SkeletonCallbackHandler {
             }
         }
         return getPendingActionInfo();
+    }
+
+    /**
+     * Auto-pass empty GAME_SELECT priorities (no playable cards) and return
+     * when a meaningful decision is needed: playable cards available, or
+     * any non-GAME_SELECT action (mulligan, target, blocker, etc.).
+     */
+    public Map<String, Object> passPriority(int timeoutMs) {
+        long startTime = System.currentTimeMillis();
+        int actionsPassed = 0;
+
+        while (System.currentTimeMillis() - startTime < timeoutMs) {
+            PendingAction action = pendingAction;
+            if (action != null) {
+                ClientCallbackMethod method = action.getMethod();
+
+                // Non-GAME_SELECT always needs LLM input — return immediately
+                if (method != ClientCallbackMethod.GAME_SELECT) {
+                    Map<String, Object> result = new HashMap<>();
+                    result.put("action_pending", true);
+                    result.put("action_type", method.name());
+                    result.put("actions_passed", actionsPassed);
+                    return result;
+                }
+
+                // GAME_SELECT: update game view from callback data
+                if (action.getData() instanceof GameClientMessage) {
+                    GameView gv = ((GameClientMessage) action.getData()).getGameView();
+                    if (gv != null) {
+                        lastGameView = gv;
+                        // Clear failed casts when the turn changes (new mana available)
+                        int turn = gv.getTurn();
+                        if (turn != lastTurnNumber) {
+                            lastTurnNumber = turn;
+                            failedManaCasts.clear();
+                        }
+                    }
+                }
+
+                // Check if there are playable cards (non-mana-only, excluding failed casts)
+                PlayableObjectsList playable = lastGameView != null ? lastGameView.getCanPlayObjects() : null;
+                boolean hasPlayableCards = false;
+                if (playable != null && !playable.isEmpty()) {
+                    for (Map.Entry<UUID, PlayableObjectStats> entry : playable.getObjects().entrySet()) {
+                        if (failedManaCasts.contains(entry.getKey())) {
+                            continue;
+                        }
+                        List<String> abilityNames = entry.getValue().getPlayableAbilityNames();
+                        boolean allMana = !abilityNames.isEmpty();
+                        for (String name : abilityNames) {
+                            if (!name.contains("{T}: Add ")) {
+                                allMana = false;
+                                break;
+                            }
+                        }
+                        if (!allMana) {
+                            hasPlayableCards = true;
+                            break;
+                        }
+                    }
+                }
+
+                if (hasPlayableCards) {
+                    // Playable cards available — return so LLM can decide
+                    Map<String, Object> result = new HashMap<>();
+                    result.put("action_pending", true);
+                    result.put("action_type", method.name());
+                    result.put("actions_passed", actionsPassed);
+                    result.put("has_playable_cards", true);
+                    return result;
+                }
+
+                // No playable cards — auto-pass this priority
+                pendingAction = null;
+                session.sendPlayerBoolean(action.getGameId(), false);
+                actionsPassed++;
+            }
+
+            // Wait for next action
+            long remaining = timeoutMs - (System.currentTimeMillis() - startTime);
+            if (remaining <= 0) break;
+            synchronized (actionLock) {
+                try {
+                    actionLock.wait(Math.min(remaining, 200));
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                    break;
+                }
+            }
+        }
+
+        // Timeout
+        Map<String, Object> result = new HashMap<>();
+        result.put("action_pending", false);
+        result.put("actions_passed", actionsPassed);
+        result.put("timeout", true);
+        return result;
     }
 
     public Map<String, Object> autoPassUntilEvent(int minNewChars, int timeoutMs) {
@@ -902,9 +1241,32 @@ public class SkeletonCallbackHandler {
 
             // Hand cards (only for our player)
             if (isMe && gameView.getMyHand() != null) {
-                List<String> handCards = new ArrayList<>();
-                for (CardView card : gameView.getMyHand().values()) {
-                    handCards.add(card.getDisplayName());
+                List<Map<String, Object>> handCards = new ArrayList<>();
+                PlayableObjectsList playable = gameView.getCanPlayObjects();
+
+                for (Map.Entry<UUID, CardView> handEntry : gameView.getMyHand().entrySet()) {
+                    CardView card = handEntry.getValue();
+                    Map<String, Object> cardInfo = new HashMap<>();
+                    cardInfo.put("name", card.getDisplayName());
+
+                    String manaCost = card.getManaCostStr();
+                    if (manaCost != null && !manaCost.isEmpty()) {
+                        cardInfo.put("mana_cost", manaCost);
+                    }
+                    cardInfo.put("mana_value", card.getManaValue());
+
+                    if (card.isLand()) {
+                        cardInfo.put("is_land", true);
+                    }
+                    if (card.isCreature() && card.getPower() != null) {
+                        cardInfo.put("power", card.getPower());
+                        cardInfo.put("toughness", card.getToughness());
+                    }
+                    if (playable != null && playable.containsObject(handEntry.getKey())) {
+                        cardInfo.put("playable", true);
+                    }
+
+                    handCards.add(cardInfo);
                 }
                 playerInfo.put("hand", handCards);
             }
@@ -1193,10 +1555,14 @@ public class SkeletonCallbackHandler {
 
                 case GAME_PLAY_MANA:
                 case GAME_PLAY_XMANA:
-                    if (mcpMode) {
-                        storePendingAction(objectId, method, callback);
-                    } else {
-                        handleGamePlayMana(objectId, callback);
+                    // Try auto-tap first; if it fails, let the LLM choose
+                    if (!handleGamePlayManaAuto(objectId, callback)) {
+                        if (mcpMode) {
+                            storePendingAction(objectId, method, callback);
+                        } else {
+                            // Non-MCP mode: cancel the payment
+                            session.sendPlayerBoolean(objectId, false);
+                        }
                     }
                     break;
 
@@ -1472,11 +1838,73 @@ public class SkeletonCallbackHandler {
         session.sendPlayerBoolean(gameId, true);
     }
 
-    private void handleGamePlayMana(UUID gameId, ClientCallback callback) {
+    /**
+     * Try to auto-tap a mana source. Returns true if a source was tapped,
+     * false if no suitable source was found (caller should fall through to LLM).
+     */
+    private boolean handleGamePlayManaAuto(UUID gameId, ClientCallback callback) {
         GameClientMessage message = (GameClientMessage) callback.getData();
-        logger.info("[" + client.getUsername() + "] Mana: \"" + message.getMessage() + "\" -> CANCEL/AUTO");
-        sleepBeforeAction();
+        GameView gameView = message.getGameView();
+        if (gameView != null) {
+            lastGameView = gameView;
+        }
+
+        // Extract the object being paid for from the message HTML (object_id='...')
+        // so we don't tap it for mana when it needs to tap/sacrifice for its own ability.
+        UUID payingForId = null;
+        String msg = message.getMessage();
+        if (msg != null) {
+            int idx = msg.indexOf("object_id='");
+            if (idx >= 0) {
+                int start = idx + "object_id='".length();
+                int end = msg.indexOf("'", start);
+                if (end > start) {
+                    try {
+                        payingForId = UUID.fromString(msg.substring(start, end));
+                    } catch (IllegalArgumentException e) {
+                        // ignore malformed UUID
+                    }
+                }
+            }
+        }
+
+        // Find a mana source from canPlayObjects and tap it
+        PlayableObjectsList playable = gameView != null ? gameView.getCanPlayObjects() : null;
+        if (playable != null && !playable.isEmpty()) {
+            // Find the first object that has a mana ability (but skip the object being paid for)
+            for (Map.Entry<UUID, PlayableObjectStats> entry : playable.getObjects().entrySet()) {
+                UUID objectId = entry.getKey();
+                // Don't tap the source we're paying for — it may need {T}/sacrifice as part of its cost
+                if (objectId.equals(payingForId)) {
+                    continue;
+                }
+                PlayableObjectStats stats = entry.getValue();
+                List<String> abilityNames = stats.getPlayableAbilityNames();
+                boolean hasManaAbility = false;
+                for (String name : abilityNames) {
+                    if (name.contains("{T}: Add ")) {
+                        hasManaAbility = true;
+                        break;
+                    }
+                }
+                if (hasManaAbility) {
+                    logger.info("[" + client.getUsername() + "] Mana: \"" + msg + "\" -> tapping " + objectId.toString().substring(0, 8));
+                    session.sendPlayerUUID(gameId, objectId);
+                    return true;
+                }
+            }
+        }
+
+        // No suitable mana source found — auto-cancel the spell.
+        // The server's canPlayObjects often over-counts mana (e.g. Llanowar Wastes has 3 tap
+        // abilities but can only tap once), so the spell may be reported as playable when it
+        // isn't. Track it so we don't retry in an infinite loop.
+        logger.info("[" + client.getUsername() + "] Mana: \"" + msg + "\" -> no mana source available, cancelling spell");
+        if (payingForId != null) {
+            failedManaCasts.add(payingForId);
+        }
         session.sendPlayerBoolean(gameId, false);
+        return true;
     }
 
     private void handleGameGetAmount(UUID gameId, ClientCallback callback) {
