@@ -143,6 +143,7 @@ async def run_pilot_loop(
     ]
     input_price, output_price = _get_model_price(model)
     cumulative_cost = 0.0
+    empty_responses = 0  # consecutive LLM responses with no reasoning text
 
     while True:
         # Check for auto-passable actions before calling LLM
@@ -181,6 +182,17 @@ async def run_pilot_loop(
                 # Show LLM reasoning alongside tool calls
                 if choice.message.content:
                     print(f"[pilot] Thinking: {choice.message.content}")
+                    empty_responses = 0
+                else:
+                    empty_responses += 1
+                    if empty_responses >= 10:
+                        print("[pilot] LLM appears degraded (no reasoning text), switching to auto-pass mode")
+                        while True:
+                            try:
+                                await execute_tool(session, "auto_pass_until_event", {})
+                            except Exception as pass_err:
+                                print(f"[pilot] Auto-pass error: {pass_err}")
+                                await asyncio.sleep(5)
                 messages.append(choice.message)
 
                 for tool_call in choice.message.tool_calls:
@@ -233,6 +245,10 @@ async def run_pilot_loop(
                 if content:
                     print(f"[pilot] Thinking: {content[:500]}")
                     messages.append({"role": "assistant", "content": content})
+                    empty_responses = 0
+                else:
+                    empty_responses += 1
+                    print(f"[pilot] Empty response from LLM (no tools, no text) [{empty_responses}]")
                 messages.append({
                     "role": "user",
                     "content": "Continue playing. Call wait_for_action.",
@@ -240,6 +256,7 @@ async def run_pilot_loop(
 
             # Trim message history to avoid unbounded growth
             if len(messages) > 40:
+                print(f"[pilot] Trimming context: {len(messages)} -> ~27 messages")
                 messages = (
                     [messages[0]]
                     + [{"role": "user", "content": "Continue playing. Call get_action_choices before choose_action. All cards listed are playable right now with your current mana. Play cards with index=N, pass with answer=false. Send a chat message every few turns."}]
