@@ -55,6 +55,7 @@ def _write_cost_file(game_dir: Path, username: str, cost: float) -> None:
 # wait_for_action is strictly better).
 PILOT_TOOLS = {
     "wait_for_action",
+    "pass_priority",
     "get_action_choices",
     "choose_action",
     "get_game_state",
@@ -70,7 +71,8 @@ plays, taunt opponents, celebrate your own plays, and have fun! Send a chat mess
 every few turns.
 
 GAME LOOP:
-1. Call wait_for_action to wait for the game to need your input
+1. Call pass_priority to wait until you can actually do something \
+   (it auto-skips empty priorities where you have no playable cards)
 2. Call get_action_choices to see what you can do
 3. Call choose_action with your decision
 4. Go back to step 1
@@ -85,7 +87,9 @@ HOW ACTIONS WORK:
 - GAME_ASK (boolean): Answer true/false. For MULLIGAN: your_hand shows your hand.
 - GAME_CHOOSE_ABILITY (index): Pick an ability by index.
 - GAME_TARGET (index): Pick a target by index.
-- Mana payment is handled automatically - you just pick cards to play.
+- GAME_PLAY_MANA (select): Mana is usually paid automatically, but if the auto-tapper \
+  can't figure it out, you'll see available mana sources. Pick one by index to tap it, \
+  or answer=false to cancel the spell.
 
 IMPORTANT: Always call get_action_choices before choose_action.\
 """
@@ -179,20 +183,12 @@ async def run_pilot_loop(
 
             # If the LLM produced tool calls, process them
             if choice.message.tool_calls:
-                # Show LLM reasoning alongside tool calls
+                # Tool calls present = LLM is functioning, reset degradation counter.
+                # Gemini often omits reasoning text for obvious actions (like passing) -
+                # that's normal, not degradation.
                 if choice.message.content:
                     print(f"[pilot] Thinking: {choice.message.content}")
-                    empty_responses = 0
-                else:
-                    empty_responses += 1
-                    if empty_responses >= 10:
-                        print("[pilot] LLM appears degraded (no reasoning text), switching to auto-pass mode")
-                        while True:
-                            try:
-                                await execute_tool(session, "auto_pass_until_event", {})
-                            except Exception as pass_err:
-                                print(f"[pilot] Auto-pass error: {pass_err}")
-                                await asyncio.sleep(5)
+                empty_responses = 0
                 messages.append(choice.message)
 
                 for tool_call in choice.message.tool_calls:
@@ -249,18 +245,32 @@ async def run_pilot_loop(
                 else:
                     empty_responses += 1
                     print(f"[pilot] Empty response from LLM (no tools, no text) [{empty_responses}]")
+                    if empty_responses >= 10:
+                        print("[pilot] LLM appears degraded (no tools or text), switching to auto-pass mode")
+                        try:
+                            await execute_tool(session, "send_chat_message", {"message": "My brain is fried... going on autopilot for the rest of this game. GG!"})
+                        except Exception:
+                            pass
+                        while True:
+                            try:
+                                await execute_tool(session, "auto_pass_until_event", {})
+                            except Exception as pass_err:
+                                print(f"[pilot] Auto-pass error: {pass_err}")
+                                await asyncio.sleep(5)
                 messages.append({
                     "role": "user",
                     "content": "Continue playing. Call wait_for_action.",
                 })
 
-            # Trim message history to avoid unbounded growth
-            if len(messages) > 40:
-                print(f"[pilot] Trimming context: {len(messages)} -> ~27 messages")
+            # Trim message history to avoid unbounded growth.
+            # The game loop is tool-call-heavy (3+ messages per action), so we need
+            # a generous limit to avoid constant trimming that degrades LLM reasoning.
+            if len(messages) > 120:
+                print(f"[pilot] Trimming context: {len(messages)} -> ~82 messages")
                 messages = (
                     [messages[0]]
-                    + [{"role": "user", "content": "Continue playing. Call get_action_choices before choose_action. All cards listed are playable right now with your current mana. Play cards with index=N, pass with answer=false. Send a chat message every few turns."}]
-                    + messages[-25:]
+                    + [{"role": "user", "content": "Continue playing. Use pass_priority to skip ahead, then get_action_choices before choose_action. All cards listed are playable right now. Play cards with index=N, pass with answer=false."}]
+                    + messages[-80:]
                 )
 
         except Exception as e:

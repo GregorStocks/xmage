@@ -224,6 +224,26 @@ public class McpServer {
         waitActionTool.put("inputSchema", waitActionSchema);
         tools.add(waitActionTool);
 
+        // pass_priority
+        Map<String, Object> passPriorityTool = new HashMap<>();
+        passPriorityTool.put("name", "pass_priority");
+        passPriorityTool.put("description",
+                "Auto-pass priority until you can actually do something. Skips empty priorities where " +
+                "you have no playable cards, and returns when: (1) you have cards you can play, or " +
+                "(2) a non-priority decision is needed (mulligan, target selection, etc.). " +
+                "Call this after making your play or passing to skip ahead efficiently.");
+        Map<String, Object> passPrioritySchema = new HashMap<>();
+        passPrioritySchema.put("type", "object");
+        Map<String, Object> passPriorityProps = new HashMap<>();
+        Map<String, Object> passPriorityTimeoutProp = new HashMap<>();
+        passPriorityTimeoutProp.put("type", "integer");
+        passPriorityTimeoutProp.put("description", "Max milliseconds to wait (default 30000)");
+        passPriorityProps.put("timeout_ms", passPriorityTimeoutProp);
+        passPrioritySchema.put("properties", passPriorityProps);
+        passPrioritySchema.put("additionalProperties", false);
+        passPriorityTool.put("inputSchema", passPrioritySchema);
+        tools.add(passPriorityTool);
+
         // auto_pass_until_event
         Map<String, Object> autoPassTool = new HashMap<>();
         autoPassTool.put("name", "auto_pass_until_event");
@@ -378,6 +398,11 @@ public class McpServer {
             case "wait_for_action":
                 int timeoutMs = arguments.has("timeout_ms") ? arguments.get("timeout_ms").getAsInt() : 15000;
                 toolResult = callbackHandler.waitForAction(timeoutMs);
+                break;
+
+            case "pass_priority":
+                int passPriorityTimeout = arguments.has("timeout_ms") ? arguments.get("timeout_ms").getAsInt() : 30000;
+                toolResult = callbackHandler.passPriority(passPriorityTimeout);
                 break;
 
             case "auto_pass_until_event":
