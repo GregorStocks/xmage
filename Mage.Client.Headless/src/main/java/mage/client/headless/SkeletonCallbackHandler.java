@@ -350,30 +350,53 @@ public class SkeletonCallbackHandler {
                         Map<String, Object> choiceEntry = new HashMap<>();
                         choiceEntry.put("index", idx);
 
+                        // Determine where this object lives (hand = cast, battlefield = activate)
                         CardView cardView = findCardViewById(objectId);
+                        boolean isOnBattlefield = false;
+                        if (cardView == null) {
+                            // not found in hand/stack, check battlefield directly
+                            isOnBattlefield = true;
+                        } else if (lastGameView.getMyHand().get(objectId) == null
+                                   && lastGameView.getStack().get(objectId) == null) {
+                            isOnBattlefield = true;
+                        }
+
                         if (cardView != null) {
-                            StringBuilder desc = new StringBuilder(cardView.getDisplayName());
-                            String manaCost = cardView.getManaCostStr();
-                            if (manaCost != null && !manaCost.isEmpty()) {
-                                desc.append(" ").append(manaCost);
-                            }
-                            if (cardView.isCreature() && cardView.getPower() != null) {
-                                desc.append(" ").append(cardView.getPower()).append("/").append(cardView.getToughness());
-                            }
-                            // Add card type summary
-                            if (cardView.isLand()) {
-                                desc.append(" [Land]");
-                            } else if (cardView.isCreature()) {
-                                desc.append(" [Creature]");
+                            StringBuilder desc = new StringBuilder();
+                            if (isOnBattlefield) {
+                                // Show as activated ability, not a card to cast
+                                // Filter out mana abilities from the description
+                                List<String> nonManaAbilities = new ArrayList<>();
+                                for (String name : abilityNames) {
+                                    if (!name.contains("{T}: Add ")) {
+                                        nonManaAbilities.add(name);
+                                    }
+                                }
+                                desc.append(cardView.getDisplayName());
+                                if (!nonManaAbilities.isEmpty()) {
+                                    desc.append(" — ").append(String.join("; ", nonManaAbilities));
+                                }
+                                desc.append(" [Activate]");
+                            } else {
+                                desc.append(cardView.getDisplayName());
+                                String manaCost = cardView.getManaCostStr();
+                                if (manaCost != null && !manaCost.isEmpty()) {
+                                    desc.append(" ").append(manaCost);
+                                }
+                                if (cardView.isCreature() && cardView.getPower() != null) {
+                                    desc.append(" ").append(cardView.getPower()).append("/").append(cardView.getToughness());
+                                }
+                                if (cardView.isLand()) {
+                                    desc.append(" [Land]");
+                                } else if (cardView.isCreature()) {
+                                    desc.append(" [Creature]");
+                                } else {
+                                    desc.append(" [Cast]");
+                                }
                             }
                             choiceEntry.put("description", desc.toString());
                         } else {
                             choiceEntry.put("description", "Unknown (" + objectId.toString().substring(0, 8) + ")");
-                        }
-
-                        // Include ability names so LLM knows what can be done
-                        if (!abilityNames.isEmpty()) {
-                            choiceEntry.put("abilities", abilityNames);
                         }
 
                         choiceList.add(choiceEntry);
