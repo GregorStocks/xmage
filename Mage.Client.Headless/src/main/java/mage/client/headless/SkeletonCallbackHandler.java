@@ -29,6 +29,7 @@ import org.apache.log4j.Logger;
 
 import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -59,6 +60,8 @@ public class SkeletonCallbackHandler {
     private volatile UUID currentGameId = null;
     private volatile GameView lastGameView = null;
     private volatile List<Object> lastChoices = null; // Index→UUID/String mapping for choose_action
+    private final Set<UUID> failedManaCasts = new HashSet<>(); // Spells that failed mana payment (avoid retry loops)
+    private volatile int lastTurnNumber = -1; // For clearing failedManaCasts on turn change
 
     public SkeletonCallbackHandler(SkeletonMageClient client) {
         this.client = client;
@@ -329,10 +332,24 @@ public class SkeletonCallbackHandler {
                 List<Object> indexToUuid = new ArrayList<>();
 
                 if (playable != null && !playable.isEmpty()) {
+                    // Clear failed casts on turn change
+                    if (lastGameView != null) {
+                        int turn = lastGameView.getTurn();
+                        if (turn != lastTurnNumber) {
+                            lastTurnNumber = turn;
+                            failedManaCasts.clear();
+                        }
+                    }
+
                     int idx = 0;
                     for (Map.Entry<UUID, PlayableObjectStats> entry : playable.getObjects().entrySet()) {
                         UUID objectId = entry.getKey();
                         PlayableObjectStats stats = entry.getValue();
+
+                        // Skip spells that failed mana payment (can't afford them)
+                        if (failedManaCasts.contains(objectId)) {
+                            continue;
+                        }
 
                         // Skip objects whose only abilities are basic mana tapping
                         // (mana payment is handled during GAME_PLAY_MANA, not GAME_SELECT)
@@ -916,14 +933,23 @@ public class SkeletonCallbackHandler {
                     GameView gv = ((GameClientMessage) action.getData()).getGameView();
                     if (gv != null) {
                         lastGameView = gv;
+                        // Clear failed casts when the turn changes (new mana available)
+                        int turn = gv.getTurn();
+                        if (turn != lastTurnNumber) {
+                            lastTurnNumber = turn;
+                            failedManaCasts.clear();
+                        }
                     }
                 }
 
-                // Check if there are playable cards (non-mana-only)
+                // Check if there are playable cards (non-mana-only, excluding failed casts)
                 PlayableObjectsList playable = lastGameView != null ? lastGameView.getCanPlayObjects() : null;
                 boolean hasPlayableCards = false;
                 if (playable != null && !playable.isEmpty()) {
                     for (Map.Entry<UUID, PlayableObjectStats> entry : playable.getObjects().entrySet()) {
+                        if (failedManaCasts.contains(entry.getKey())) {
+                            continue;
+                        }
                         List<String> abilityNames = entry.getValue().getPlayableAbilityNames();
                         boolean allMana = !abilityNames.isEmpty();
                         for (String name : abilityNames) {
@@ -1869,9 +1895,16 @@ public class SkeletonCallbackHandler {
             }
         }
 
-        // No suitable mana source found
-        logger.info("[" + client.getUsername() + "] Mana: \"" + msg + "\" -> no auto-tap source, deferring to pilot");
-        return false;
+        // No suitable mana source found — auto-cancel the spell.
+        // The server's canPlayObjects often over-counts mana (e.g. Llanowar Wastes has 3 tap
+        // abilities but can only tap once), so the spell may be reported as playable when it
+        // isn't. Track it so we don't retry in an infinite loop.
+        logger.info("[" + client.getUsername() + "] Mana: \"" + msg + "\" -> no mana source available, cancelling spell");
+        if (payingForId != null) {
+            failedManaCasts.add(payingForId);
+        }
+        session.sendPlayerBoolean(gameId, false);
+        return true;
     }
 
     private void handleGameGetAmount(UUID gameId, ClientCallback callback) {
