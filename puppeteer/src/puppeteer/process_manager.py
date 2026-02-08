@@ -57,30 +57,61 @@ def kill_tree(pid: int):
 
 
 def cleanup_orphans(pid_file: Path = PID_FILE_PATH):
-    """Kill any processes left over from a previous harness run."""
-    if not pid_file.exists():
-        return
+    """Kill any processes left over from a previous harness run.
 
-    try:
-        with open(pid_file) as f:
-            for line in f:
-                try:
-                    pid = int(line.strip())
-                    proc = psutil.Process(pid)
-                    # Verify this is actually one of our processes
-                    env = proc.environ()
-                    if env.get("XMAGE_AI_HARNESS") == "1":
-                        print(f"Killing orphaned process {pid}")
-                        kill_tree(pid)
-                except (psutil.NoSuchProcess, ValueError, psutil.AccessDenied):
-                    pass
-    except OSError:
-        pass
-    finally:
+    Uses two strategies:
+    1. PID-file based: read tracked PIDs and kill verified ones (fast, targeted).
+    2. pgrep fallback: find processes by command-line markers (xmage.* system
+       properties, puppeteer.* module names).  This catches orphans when the
+       PID file was lost (SIGKILL, crash, etc.) or when child Java processes
+       outlived their tracked Python parents.
+    """
+    # Strategy 1: PID-file based cleanup
+    killed_pids: set[int] = set()
+    if pid_file.exists():
         try:
-            pid_file.unlink(missing_ok=True)
+            with open(pid_file) as f:
+                for line in f:
+                    try:
+                        pid = int(line.strip())
+                        proc = psutil.Process(pid)
+                        # Verify this is actually one of our processes
+                        env = proc.environ()
+                        if env.get("XMAGE_AI_HARNESS") == "1":
+                            print(f"Killing orphaned process {pid}")
+                            kill_tree(pid)
+                            killed_pids.add(pid)
+                    except (psutil.NoSuchProcess, ValueError, psutil.AccessDenied):
+                        pass
         except OSError:
             pass
+        finally:
+            try:
+                pid_file.unlink(missing_ok=True)
+            except OSError:
+                pass
+
+    # Strategy 2: find orphans by command-line markers using pgrep.
+    # We avoid psutil.environ() entirely because it can hang indefinitely
+    # on macOS (even for java/python processes).  All harness Java processes
+    # have "-Dxmage.*" system properties in their command line, and harness
+    # Python scripts run as "puppeteer.sleepwalker" / "puppeteer.pilot" / etc.
+    my_pid = os.getpid()
+    try:
+        result = subprocess.run(
+            ["pgrep", "-f", r"xmage[.]|puppeteer[.](sleepwalker|pilot|chatterbox)"],
+            capture_output=True, text=True, timeout=5,
+        )
+        for line in result.stdout.strip().splitlines():
+            try:
+                pid = int(line.strip())
+                if pid != my_pid and pid not in killed_pids:
+                    print(f"Killing orphaned process {pid}")
+                    kill_tree(pid)
+            except ValueError:
+                pass
+    except (subprocess.TimeoutExpired, OSError):
+        pass
 
 
 class ProcessManager:
@@ -147,6 +178,10 @@ class ProcessManager:
         receive signals when the parent is killed.
         """
         merged_env = os.environ.copy()
+        # Mark all harness-managed processes so cleanup_orphans() can find them
+        # even without a PID file.  This also propagates to grandchild processes
+        # (e.g. Java skeletons spawned by sleepwalker/pilot Python scripts).
+        merged_env["XMAGE_AI_HARNESS"] = "1"
         if env:
             merged_env.update(env)
 
