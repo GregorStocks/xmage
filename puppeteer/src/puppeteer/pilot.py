@@ -104,8 +104,9 @@ HOW ACTIONS WORK:
 - GAME_CHOOSE_ABILITY (index): Pick an ability by index.
 - GAME_TARGET (index): Pick a target by index.
 - GAME_PLAY_MANA (select): Mana is usually paid automatically, but if the auto-tapper \
-  can't figure it out, you'll see available mana sources. Pick one by index to tap it, \
-  or answer=false to cancel the spell.
+  can't figure it out, you'll see available mana sources. These may include tap sources \
+  (choice_type=tap_source) or non-tap mana abilities like sacrifice (choice_type=mana_source). \
+  Pick one by index to activate it, or answer=false to cancel the spell.
 
 IMPORTANT: Always call get_action_choices before choose_action.\
 """

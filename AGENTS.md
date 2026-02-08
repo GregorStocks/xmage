@@ -9,9 +9,11 @@ git rebase origin/master
 
 ## Code Isolation Philosophy
 
-Don't touch Java outside of `Mage.Client.Streaming` and `Mage.Client.Headless`. This means avoiding changes to `Mage.Client`, `Mage.Server*`, `Mage.Common`, `Mage`, `Mage.Sets`, etc. This keeps us in sync with upstream XMage.
+Avoid **modifying existing behavior** in Java outside of `Mage.Client.Streaming` and `Mage.Client.Headless`. This means not changing existing methods, fields, or logic in `Mage.Client`, `Mage.Server*`, `Mage.Common`, `Mage`, `Mage.Sets`, etc. Changing existing behavior makes incorporating upstream XMage updates difficult.
 
-**Our code:**
+**Additive changes are OK:** Adding new methods, fields, or classes to upstream modules is fine as long as existing behavior is untouched — these merge cleanly.
+
+**Our code (free to modify):**
 - `Mage.Client.Streaming` - streaming/observer client
 - `Mage.Client.Headless` - headless client for AI harness
 - `puppeteer/` - Python orchestration

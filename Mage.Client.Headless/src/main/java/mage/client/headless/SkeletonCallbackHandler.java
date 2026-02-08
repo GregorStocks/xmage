@@ -378,17 +378,11 @@ public class SkeletonCallbackHandler {
                             continue;
                         }
 
-                        // Skip objects whose only abilities are basic mana tapping
+                        // Skip objects whose only abilities are mana abilities
                         // (mana payment is handled during GAME_PLAY_MANA, not GAME_SELECT)
                         List<String> abilityNames = stats.getPlayableAbilityNames();
-                        boolean allMana = !abilityNames.isEmpty();
-                        for (String name : abilityNames) {
-                            if (!name.contains("{T}: Add ")) {
-                                allMana = false;
-                                break;
-                            }
-                        }
-                        if (allMana) {
+                        List<String> manaNames = stats.getAllManaAbilityNames();
+                        if (!abilityNames.isEmpty() && manaNames.size() == abilityNames.size()) {
                             continue;
                         }
 
@@ -411,9 +405,10 @@ public class SkeletonCallbackHandler {
                             if (isOnBattlefield) {
                                 // Show as activated ability, not a card to cast
                                 // Filter out mana abilities from the description
+                                Set<String> manaNameSet = new HashSet<>(stats.getAllManaAbilityNames());
                                 List<String> nonManaAbilities = new ArrayList<>();
                                 for (String name : abilityNames) {
-                                    if (!name.contains("{T}: Add ")) {
+                                    if (!manaNameSet.contains(name)) {
                                         nonManaAbilities.add(name);
                                     }
                                 }
@@ -468,7 +463,7 @@ public class SkeletonCallbackHandler {
                 // Auto-tap couldn't find a source — show available mana sources to the LLM
                 GameClientMessage manaMsg = (GameClientMessage) data;
                 result.put("response_type", "select");
-                result.put("hint", "Choose a mana source to tap or a mana type from pool, or answer: false to cancel the spell.");
+                result.put("hint", "Choose a mana source to activate or a mana type from pool, or answer: false to cancel the spell.");
 
                 PlayableObjectsList manaPlayable = lastGameView != null ? lastGameView.getCanPlayObjects() : null;
                 List<Map<String, Object>> manaChoiceList = new ArrayList<>();
@@ -483,34 +478,29 @@ public class SkeletonCallbackHandler {
                             continue;
                         }
                         PlayableObjectStats stats = entry.getValue();
-                        List<String> abilityNames = stats.getPlayableAbilityNames();
-                        String manaAbilityText = null;
-                        for (String name : abilityNames) {
-                            if (name.contains("{T}: Add ")) {
-                                manaAbilityText = name;
-                                break;
-                            }
-                        }
-                        if (manaAbilityText == null) {
+                        List<String> manaAbilities = stats.getAllManaAbilityNames();
+                        if (manaAbilities.isEmpty()) {
                             continue;
                         }
 
                         CardView cardView = findCardViewById(manaObjectId);
-                        Map<String, Object> choiceEntry = new HashMap<>();
-                        choiceEntry.put("index", idx);
-                        choiceEntry.put("choice_type", "tap_source");
-
-                        StringBuilder desc = new StringBuilder();
+                        String cardName;
                         if (cardView != null) {
-                            desc.append(cardView.getDisplayName());
+                            cardName = cardView.getDisplayName();
                         } else {
-                            desc.append("Unknown (" + manaObjectId.toString().substring(0, 8) + ")");
+                            cardName = "Unknown (" + manaObjectId.toString().substring(0, 8) + ")";
                         }
-                        desc.append(" — ").append(manaAbilityText);
-                        choiceEntry.put("description", desc.toString());
-                        manaChoiceList.add(choiceEntry);
-                        manaIndexToChoice.add(manaObjectId);
-                        idx++;
+
+                        for (String manaAbilityText : manaAbilities) {
+                            Map<String, Object> choiceEntry = new HashMap<>();
+                            choiceEntry.put("index", idx);
+                            boolean isTap = manaAbilityText.contains("{T}");
+                            choiceEntry.put("choice_type", isTap ? "tap_source" : "mana_source");
+                            choiceEntry.put("description", cardName + " — " + manaAbilityText);
+                            manaChoiceList.add(choiceEntry);
+                            manaIndexToChoice.add(manaObjectId);
+                            idx++;
+                        }
                     }
                 }
 
@@ -1020,14 +1010,10 @@ public class SkeletonCallbackHandler {
                         if (failedManaCasts.contains(entry.getKey())) {
                             continue;
                         }
-                        List<String> abilityNames = entry.getValue().getPlayableAbilityNames();
-                        boolean allMana = !abilityNames.isEmpty();
-                        for (String name : abilityNames) {
-                            if (!name.contains("{T}: Add ")) {
-                                allMana = false;
-                                break;
-                            }
-                        }
+                        PlayableObjectStats stats = entry.getValue();
+                        List<String> abilityNames = stats.getPlayableAbilityNames();
+                        List<String> manaNames = stats.getAllManaAbilityNames();
+                        boolean allMana = !abilityNames.isEmpty() && manaNames.size() == abilityNames.size();
                         if (!allMana) {
                             hasPlayableCards = true;
                             break;
@@ -2101,15 +2087,16 @@ public class SkeletonCallbackHandler {
                     continue;
                 }
                 PlayableObjectStats stats = entry.getValue();
-                List<String> abilityNames = stats.getPlayableAbilityNames();
-                boolean hasManaAbility = false;
-                for (String name : abilityNames) {
-                    if (name.contains("{T}: Add ")) {
-                        hasManaAbility = true;
+                // Only auto-tap mana abilities that use {T} — non-tap mana abilities
+                // (sacrifice, discard, etc.) have strategic cost and need manual selection
+                boolean hasTapManaAbility = false;
+                for (String name : stats.getAllManaAbilityNames()) {
+                    if (name.contains("{T}")) {
+                        hasTapManaAbility = true;
                         break;
                     }
                 }
-                if (hasManaAbility) {
+                if (hasTapManaAbility) {
                     logger.info("[" + client.getUsername() + "] Mana: \"" + msg + "\" -> tapping " + objectId.toString().substring(0, 8));
                     session.sendPlayerUUID(gameId, objectId);
                     return true;
