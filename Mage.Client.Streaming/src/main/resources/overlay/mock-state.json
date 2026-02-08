@@ -22,6 +22,9 @@
       "handCount": 7,
       "isActive": true,
       "hasLeft": false,
+      "timerActive": true,
+      "priorityTimeLeftSecs": 1185,
+      "bufferTimeLeft": 10,
       "counters": [],
       "commanders": [
         {
@@ -56,6 +59,9 @@
       "handCount": 7,
       "isActive": false,
       "hasLeft": false,
+      "timerActive": false,
+      "priorityTimeLeftSecs": 1200,
+      "bufferTimeLeft": 10,
       "counters": [],
       "commanders": [],
       "battlefield": [],

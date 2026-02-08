@@ -106,6 +106,10 @@ class Config:
     overlay_port: int = 17888
     overlay_host: str = "127.0.0.1"
 
+    # Match timer settings (XMage enum names, e.g. "MIN__20", "SEC__10")
+    match_time_limit: str = ""
+    match_buffer_time: str = ""
+
     # Runtime state (set during execution)
     port: int = 0
     timestamp: str = ""
@@ -141,6 +145,8 @@ class Config:
 
         with open(self.config_file) as f:
             data = json.load(f)
+            self.match_time_limit = data.get("matchTimeLimit", "")
+            self.match_buffer_time = data.get("matchBufferTime", "")
             for i, player in enumerate(data.get("players", [])):
                 player_type = player.get("type", "")
                 name = player.get("name", f"player-{i}")

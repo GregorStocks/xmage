@@ -35,8 +35,14 @@ uv run --project puppeteer python -m puppeteer
 Use Makefile targets instead of running uv commands directly:
 
 ```bash
-# Start streaming observer with recording (compiles first)
+# No-LLM game: 1 sleepwalker + 1 potato + 2 CPU players (no API keys needed)
 make run-dumb
+
+# 1 LLM pilot + CPU opponents (needs OPENROUTER_API_KEY)
+make run-llm
+
+# 4 LLM pilots battle each other (needs OPENROUTER_API_KEY)
+make run-llm4
 
 # Record to specific file
 make run-dumb OUTPUT=/path/to/video.mov

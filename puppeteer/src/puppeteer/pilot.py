@@ -171,7 +171,24 @@ async def run_pilot_loop(
                 if choice.message.content:
                     print(f"[pilot] Thinking: {choice.message.content}")
                 empty_responses = 0
-                messages.append(choice.message)
+                # Build a clean assistant message dict for cross-provider
+                # compatibility.  The raw ChatCompletionMessage includes extra
+                # fields (refusal, annotations, audio, function_call) that
+                # some providers (notably xAI/Grok) reject with 422 errors.
+                assistant_msg: dict = {"role": "assistant", "content": choice.message.content}
+                if choice.message.tool_calls:
+                    assistant_msg["tool_calls"] = [
+                        {
+                            "id": tc.id,
+                            "type": "function",
+                            "function": {
+                                "name": tc.function.name,
+                                "arguments": tc.function.arguments,
+                            },
+                        }
+                        for tc in choice.message.tool_calls
+                    ]
+                messages.append(assistant_msg)
 
                 for tool_call in choice.message.tool_calls:
                     fn = tool_call.function

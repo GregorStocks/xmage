@@ -75,6 +75,46 @@ def bring_to_foreground_macos() -> None:
     )
 
 
+def _print_game_summary(game_dir: Path) -> None:
+    """Print a summary of game results and costs after the game ends."""
+    print("\n" + "=" * 60)
+    print("GAME SUMMARY")
+    print("=" * 60)
+
+    # Scan headless client logs for "Game over:" messages
+    game_over_found = False
+    for log_file in sorted(game_dir.glob("*_pilot.log")) + sorted(game_dir.glob("*_mcp.log")):
+        try:
+            text = log_file.read_text()
+            for line in text.splitlines():
+                if "Game over:" in line:
+                    game_over_found = True
+                    print(f"  {line.strip()}")
+        except OSError:
+            pass
+
+    if not game_over_found:
+        print("  Game did not finish (killed or disconnected)")
+
+    # Print per-player costs
+    cost_files = sorted(game_dir.glob("*_cost.json"))
+    if cost_files:
+        print()
+        total_cost = 0.0
+        for cost_file in cost_files:
+            try:
+                data = json.loads(cost_file.read_text())
+                cost = data.get("cost_usd", 0.0)
+                player = cost_file.stem.replace("_cost", "")
+                total_cost += cost
+                print(f"  {player}: ${cost:.4f}")
+            except (OSError, json.JSONDecodeError):
+                pass
+        print(f"  Total: ${total_cost:.4f}")
+
+    print("=" * 60 + "\n")
+
+
 def parse_args() -> Config:
     """Parse command line arguments."""
     parser = argparse.ArgumentParser(description="XMage AI Harness")
@@ -253,6 +293,10 @@ def start_gui_client(
         "XMAGE_AI_HARNESS_PLAYERS_CONFIG": config_json,
         "MAVEN_OPTS": jvm_args,
     }
+    if config.match_time_limit:
+        env["XMAGE_AI_HARNESS_MATCH_TIME_LIMIT"] = config.match_time_limit
+    if config.match_buffer_time:
+        env["XMAGE_AI_HARNESS_MATCH_BUFFER_TIME"] = config.match_buffer_time
 
     return pm.start_process(
         args=["mvn", "-q", "exec:java"],
@@ -508,6 +552,10 @@ def start_streaming_client(
         "XMAGE_AI_HARNESS_PLAYERS_CONFIG": config_json,
         "MAVEN_OPTS": jvm_args,
     }
+    if config.match_time_limit:
+        env["XMAGE_AI_HARNESS_MATCH_TIME_LIMIT"] = config.match_time_limit
+    if config.match_buffer_time:
+        env["XMAGE_AI_HARNESS_MATCH_BUFFER_TIME"] = config.match_buffer_time
 
     return pm.start_process(
         args=["mvn", "-q", "exec:java"],
@@ -726,6 +774,8 @@ def main() -> int:
 
         # Wait for observer client to exit
         observer_proc.wait()
+
+        _print_game_summary(game_dir)
 
         return 0
     finally:
