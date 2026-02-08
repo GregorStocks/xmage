@@ -993,6 +993,22 @@ public class SkeletonCallbackHandler {
             if (action != null) {
                 ClientCallbackMethod method = action.getMethod();
 
+                // GAME_PLAY_MANA: auto-tapper couldn't handle it, cancel the spell
+                if (method == ClientCallbackMethod.GAME_PLAY_MANA || method == ClientCallbackMethod.GAME_PLAY_XMANA) {
+                    UUID payingForId = extractPayingForId(action.getMessage());
+                    if (payingForId != null) {
+                        failedManaCasts.add(payingForId);
+                    }
+                    synchronized (actionLock) {
+                        if (pendingAction == action) {
+                            pendingAction = null;
+                        }
+                    }
+                    session.sendPlayerBoolean(action.getGameId(), false);
+                    actionsPassed++;
+                    continue;
+                }
+
                 // Non-GAME_SELECT always needs LLM input — return immediately
                 if (method != ClientCallbackMethod.GAME_SELECT) {
                     Map<String, Object> result = new HashMap<>();
