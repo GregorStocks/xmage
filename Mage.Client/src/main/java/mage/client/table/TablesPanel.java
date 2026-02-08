@@ -1724,8 +1724,10 @@ public class TablesPanel extends javax.swing.JPanel {
             options.setAttackOption(MultiplayerAttackOption.MULTIPLE);
             options.setRange(RangeOfInfluence.ONE);
             options.setWinsNeeded(2);
-            options.setMatchTimeLimit(MatchTimeLimit.NONE);
-            options.setMatchBufferTime(MatchBufferTime.NONE);
+            String timeLimitEnv = System.getenv("XMAGE_AI_HARNESS_MATCH_TIME_LIMIT");
+            options.setMatchTimeLimit(timeLimitEnv != null ? MatchTimeLimit.valueOf(timeLimitEnv) : MatchTimeLimit.NONE);
+            String bufferTimeEnv = System.getenv("XMAGE_AI_HARNESS_MATCH_BUFFER_TIME");
+            options.setMatchBufferTime(bufferTimeEnv != null ? MatchBufferTime.valueOf(bufferTimeEnv) : MatchBufferTime.NONE);
             options.setFreeMulligans(2);
             options.setSkillLevel(SkillLevel.CASUAL);
             options.setRollbackTurnsAllowed(true);

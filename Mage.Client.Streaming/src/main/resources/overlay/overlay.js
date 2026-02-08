@@ -267,6 +267,12 @@
       if (counters.length > 0) {
         lines.push(counters.join(" "));
       }
+      if (player.priorityTimeLeftSecs > 0 || player.timerActive) {
+        var secs = player.priorityTimeLeftSecs || 0;
+        var m = Math.floor(secs / 60);
+        var s = secs % 60;
+        lines.push("Clock " + m + ":" + String(s).padStart(2, "0"));
+      }
       statsEl.textContent = lines.join(" | ");
       header.appendChild(statsEl);
 

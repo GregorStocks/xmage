@@ -18,6 +18,23 @@ Avoid **modifying existing behavior** in Java outside of `Mage.Client.Streaming`
 - `Mage.Client.Headless` - headless client for AI harness
 - `puppeteer/` - Python orchestration
 
+## Architecture: MCP Layer vs Python Harness
+
+Game logic, Magic rules quirks, and XMage-specific workarounds belong in the **Java MCP layer** (`Mage.Client.Headless`), not in the Python harness. The MCP layer should handle things like:
+
+- Auto-tapping and mana payment fallbacks
+- Filtering out unplayable actions (e.g. failed mana casts)
+- Auto-passing priority when there are no meaningful choices
+- Working around XMage UI quirks (modal dialogs, selection prompts)
+
+The **Python harness** (`puppeteer/`) should stay simple. Its job is to:
+
+- Connect the MCP server to the LLMs via tool calls
+- Provide additional tools for the LLMs (e.g. card lookup)
+- Orchestrate the game lifecycle (start server, connect clients, record)
+
+If you're tempted to add a special case or workaround in Python, consider whether it should live in Java instead. The LLMs should see a clean, high-level interface — the MCP layer absorbs the complexity.
+
 ## Python
 
 Always use `uv` for Python. Never use system Python directly.
@@ -35,8 +52,14 @@ uv run --project puppeteer python -m puppeteer
 Use Makefile targets instead of running uv commands directly:
 
 ```bash
-# Start streaming observer with recording (compiles first)
+# No-LLM game: 1 sleepwalker + 1 potato + 2 CPU players (no API keys needed)
 make run-dumb
+
+# 1 LLM pilot + CPU opponents (needs OPENROUTER_API_KEY)
+make run-llm
+
+# 4 LLM pilots battle each other (needs OPENROUTER_API_KEY)
+make run-llm4
 
 # Record to specific file
 make run-dumb OUTPUT=/path/to/video.mov

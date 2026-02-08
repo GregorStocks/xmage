@@ -1322,6 +1322,9 @@ public class StreamingGamePanel extends GamePanel {
             playerJson.addProperty("handCount", player.getHandCount());
             playerJson.addProperty("isActive", player.isActive());
             playerJson.addProperty("hasLeft", player.hasLeft());
+            playerJson.addProperty("timerActive", player.isTimerActive());
+            playerJson.addProperty("priorityTimeLeftSecs", player.getPriorityTimeLeftSecs());
+            playerJson.addProperty("bufferTimeLeft", player.getBufferTimeLeft());
             playerJson.add("counters", countersToJson(player));
             playerJson.add("battlefield", battlefieldToJson(player, layout));
             playerJson.add("commanders", commandersToJson(player, layout));
