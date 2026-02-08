@@ -14,10 +14,6 @@ clean:
 lint:
 	uv run python scripts/lint-issues.py
 
-.PHONY: log-clean
-log-clean:
-	rm -rf .context/ai-harness-logs/*
-	@echo "Cleaned ai-harness logs"
 
 .PHONY: build
 build:
