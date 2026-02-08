@@ -66,11 +66,6 @@ def parse_args() -> Config:
     """Parse command line arguments."""
     parser = argparse.ArgumentParser(description="XMage AI Harness")
     parser.add_argument(
-        "--skip-compile",
-        action="store_true",
-        help="Skip Maven compilation",
-    )
-    parser.add_argument(
         "--config",
         type=Path,
         help="Path to skeleton player config JSON",
@@ -96,7 +91,6 @@ def parse_args() -> Config:
         record_output = Path(args.record)
 
     config = Config(
-        skip_compile=args.skip_compile,
         config_file=args.config,
         streaming=args.streaming,
         record=bool(args.record),
@@ -509,10 +503,9 @@ def main() -> int:
         )
 
         # Compile if needed
-        if not config.skip_compile:
-            if not compile_project(project_root, streaming=config.streaming):
-                print("ERROR: Compilation failed")
-                return 1
+        if not compile_project(project_root, streaming=config.streaming):
+            print("ERROR: Compilation failed")
+            return 1
 
         # Find available port
         print(f"Finding available port starting from {config.start_port}...")
