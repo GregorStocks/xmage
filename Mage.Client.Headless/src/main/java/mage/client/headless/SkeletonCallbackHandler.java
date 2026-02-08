@@ -37,6 +37,7 @@ import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.regex.Pattern;
 
 /**
  * Callback handler for the skeleton headless client.
@@ -49,6 +50,16 @@ public class SkeletonCallbackHandler {
 
     private static final Logger logger = Logger.getLogger(SkeletonCallbackHandler.class);
     private static final int DEFAULT_ACTION_DELAY_MS = 500;
+
+    // Regex patterns to detect colored mana symbols inside braces, including hybrid/phyrexian variants.
+    // Same approach as ManaUtil.java — \x7b = {, \x7d = }, .{0,2} allows up to 2 chars on each side.
+    // Matches {W}, {W/U}, {W/P}, {W/U/P}, {2/W}, {C/W}, etc.
+    private static final Pattern REGEX_WHITE = Pattern.compile("\\x7b.{0,2}W.{0,2}\\x7d");
+    private static final Pattern REGEX_BLUE = Pattern.compile("\\x7b.{0,2}U.{0,2}\\x7d");
+    private static final Pattern REGEX_BLACK = Pattern.compile("\\x7b.{0,2}B.{0,2}\\x7d");
+    private static final Pattern REGEX_RED = Pattern.compile("\\x7b.{0,2}R.{0,2}\\x7d");
+    private static final Pattern REGEX_GREEN = Pattern.compile("\\x7b.{0,2}G.{0,2}\\x7d");
+    private static final Pattern REGEX_COLORLESS = Pattern.compile("\\x7b.{0,2}C.{0,2}\\x7d");
 
     private final SkeletonMageClient client;
     private Session session;
@@ -2017,42 +2028,40 @@ public class SkeletonCallbackHandler {
         if (promptText == null) {
             return false;
         }
-        String msg = promptText.toUpperCase();
-        return msg.contains("{W}")
-                || msg.contains("{U}")
-                || msg.contains("{B}")
-                || msg.contains("{R}")
-                || msg.contains("{G}")
-                || msg.contains("{C}");
+        return REGEX_WHITE.matcher(promptText).find()
+                || REGEX_BLUE.matcher(promptText).find()
+                || REGEX_BLACK.matcher(promptText).find()
+                || REGEX_RED.matcher(promptText).find()
+                || REGEX_GREEN.matcher(promptText).find()
+                || REGEX_COLORLESS.matcher(promptText).find();
     }
 
     private boolean addExplicitPoolChoices(List<ManaType> orderedChoices, ManaPoolView manaPool, String promptText) {
         if (promptText == null) {
             return false;
         }
-        String msg = promptText.toUpperCase();
         boolean hasExplicitSymbols = false;
-        if (msg.contains("{W}")) {
+        if (REGEX_WHITE.matcher(promptText).find()) {
             hasExplicitSymbols = true;
             addPreferredPoolManaChoice(orderedChoices, manaPool, ManaType.WHITE);
         }
-        if (msg.contains("{U}")) {
+        if (REGEX_BLUE.matcher(promptText).find()) {
             hasExplicitSymbols = true;
             addPreferredPoolManaChoice(orderedChoices, manaPool, ManaType.BLUE);
         }
-        if (msg.contains("{B}")) {
+        if (REGEX_BLACK.matcher(promptText).find()) {
             hasExplicitSymbols = true;
             addPreferredPoolManaChoice(orderedChoices, manaPool, ManaType.BLACK);
         }
-        if (msg.contains("{R}")) {
+        if (REGEX_RED.matcher(promptText).find()) {
             hasExplicitSymbols = true;
             addPreferredPoolManaChoice(orderedChoices, manaPool, ManaType.RED);
         }
-        if (msg.contains("{G}")) {
+        if (REGEX_GREEN.matcher(promptText).find()) {
             hasExplicitSymbols = true;
             addPreferredPoolManaChoice(orderedChoices, manaPool, ManaType.GREEN);
         }
-        if (msg.contains("{C}")) {
+        if (REGEX_COLORLESS.matcher(promptText).find()) {
             hasExplicitSymbols = true;
             addPreferredPoolManaChoice(orderedChoices, manaPool, ManaType.COLORLESS);
         }
