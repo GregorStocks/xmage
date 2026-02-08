@@ -90,17 +90,24 @@ def cleanup_orphans(pid_file: Path = PID_FILE_PATH):
             except OSError:
                 pass
 
-    # Strategy 2: scan all processes for any we missed
+    # Strategy 2: scan all processes for any we missed.
+    # Only inspect java/python/mvn processes to avoid calling environ() on
+    # system processes, which can block indefinitely on macOS.
+    _HARNESS_PROC_NAMES = ("java", "python", "mvn")
     my_pid = os.getpid()
-    for proc in psutil.process_iter():
+    for proc in psutil.process_iter(["pid", "name"]):
         try:
-            if proc.pid == my_pid or proc.pid in killed_pids:
+            info = proc.info
+            if info["pid"] == my_pid or info["pid"] in killed_pids:
+                continue
+            name = (info.get("name") or "").lower()
+            if not any(s in name for s in _HARNESS_PROC_NAMES):
                 continue
             env = proc.environ()
             if env.get("XMAGE_AI_HARNESS") == "1":
-                print(f"Killing orphaned process {proc.pid} ({proc.name()})")
-                kill_tree(proc.pid)
-        except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
+                print(f"Killing orphaned process {info['pid']} ({name})")
+                kill_tree(info["pid"])
+        except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess, OSError):
             pass
 
 
